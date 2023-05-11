@@ -1,0 +1,9 @@
+/target
+/.vscode
+/pyenv
+/pytest
+/python/hiob/*.so
+/python/hiob/__pycache__
+
+# Ignore Cargo.lock because this is a library and not a binary
+Cargo.lock
