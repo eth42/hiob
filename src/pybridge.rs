@@ -30,14 +30,16 @@ macro_rules! hiob_struct_gen {
 			#[pymethods]
 			impl [<HIOB_ $prec_type _ $bin_type>] {
 				#[new]
-				pub fn new(data: PyReadonlyArray2<$prec_type>, n_bits: usize, scale: Option<$prec_type>, centers: Option<PyReadonlyArray2<$prec_type>>) -> Self {
+				pub fn new(data: PyReadonlyArray2<$prec_type>, n_bits: usize, scale: Option<$prec_type>, centers: Option<PyReadonlyArray2<$prec_type>>, init_greedy: Option<bool>, init_ransac: Option<bool>) -> Self {
 					Self{hiob: HIOB::new(
 						data.as_array().into_owned(),
 						n_bits,
 						scale,
 						if centers.is_some() {
 							Some(centers.unwrap().as_array().into_owned())
-						} else { None }
+						} else { None },
+						init_greedy,
+						init_ransac
 					)}
 				}
 				pub fn run(&mut self, n_iterations: usize) {

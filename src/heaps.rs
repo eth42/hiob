@@ -21,16 +21,20 @@ pub trait GenericHeap: IntoIterator {
 	fn pop(&mut self) -> Option<(Self::Key, Self::Value)> {
 		let element = self.wrapped_heap_mut().pop();
 		if element.is_some() {
-			let element = element.unwrap();
-			Some((*element.key_ref(), *element.value_ref()))
+			unsafe {
+				let element = element.unwrap_unchecked();
+				Some((*element.key_ref(), *element.value_ref()))
+			}
 		} else { None }
 	}
 	fn peek(&self) -> Option<(Self::Key, Self::Value)> {
 		let heap = self.wrapped_heap();
 		let element = heap.peek();
 		if element.is_some() {
-			let element = element.unwrap();
-			Some((*element.key_ref(), *element.value_ref()))
+			unsafe {
+				let element = element.unwrap_unchecked();
+				Some((*element.key_ref(), *element.value_ref()))
+			}
 		} else { None }
 	}
 	fn size(&self) -> usize {
@@ -135,13 +139,13 @@ impl<T: HeapKey, V: HeapValue> PartialEq for MinHeapPair<T, V> {
 impl<T: HeapKey, V: HeapValue> PartialOrd for MinHeapPair<T, V> {
 	fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
 		let pcmp = self.key.partial_cmp(&other.key);
-		if pcmp.is_none() { None } else { Some(pcmp.unwrap().reverse()) }
+		if pcmp.is_none() { None } else { unsafe { Some(pcmp.unwrap_unchecked().reverse()) } }
 	}
 }
 impl<T: HeapKey, V: HeapValue> Eq for MinHeapPair<T, V> {}
 impl<T: HeapKey, V: HeapValue> Ord for MinHeapPair<T, V> {
 	fn cmp(&self, other: &Self) -> Ordering {
-		self.key.partial_cmp(&other.key).unwrap()
+		unsafe { self.key.partial_cmp(&other.key).unwrap_unchecked() }
 	}
 }
 
@@ -171,6 +175,6 @@ impl<T: HeapKey, V: HeapValue> PartialOrd for MaxHeapPair<T, V> {
 impl<T: HeapKey, V: HeapValue> Eq for MaxHeapPair<T, V> {}
 impl<T: HeapKey, V: HeapValue> Ord for MaxHeapPair<T, V> {
 	fn cmp(&self, other: &Self) -> Ordering {
-		self.key.partial_cmp(&other.key).unwrap()
+		unsafe { self.key.partial_cmp(&other.key).unwrap_unchecked() }
 	}
 }

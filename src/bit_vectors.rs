@@ -171,12 +171,14 @@ impl<'a, B: Bits, It: Iterator<Item=&'a B>> Iterator for BitsToBoolIterator<'a, 
 		if self.curr_val.is_none() {
 			None
 		} else {
-			let bit = self.curr_val.unwrap().get_bit(self.bit_offset);
-			self.bit_offset += 1;
-			if self.bit_offset == B::size() {
-				self.bit_offset = 0;
+			unsafe {
+				let bit = self.curr_val.unwrap_unchecked().get_bit(self.bit_offset);
+				self.bit_offset += 1;
+				if self.bit_offset == B::size() {
+					self.bit_offset = 0;
+				}
+				bit
 			}
-			bit
 		}
 	}
 }

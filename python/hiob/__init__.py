@@ -25,6 +25,8 @@ class HIOB:
 		output_type: type = np.uint64,
 		scale: float = 1.0,
 		centers: np.ndarray = None,
+		init_greedy = None,
+		init_ransac = None,
 		update_parallel = None,
 		displace_parallel = None,
 	):
@@ -37,7 +39,7 @@ class HIOB:
 		output_type_name = _bits_type_name(self._output_type)
 		# Create specific instance
 		specific_type = "HIOB_{:}_{:}".format(input_type_name, output_type_name)
-		self._rust_hiob = globals()[specific_type](X, n_bits, scale, None if centers is None else centers.astype(self._input_type))
+		self._rust_hiob = globals()[specific_type](X, n_bits, scale, None if centers is None else centers.astype(self._input_type), init_greedy, init_ransac)
 		if not update_parallel is None: self._rust_hiob.update_parallel = update_parallel
 		if not displace_parallel is None: self._rust_hiob.displace_parallel = displace_parallel
 		attributes = {}

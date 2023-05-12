@@ -55,16 +55,16 @@ impl<B: Bits, D: Data<Elem=B>+MaybeSend+MaybeSync, const FANOUT: usize> THX<B, D
 
 	fn init(&mut self) {
 		(0..self.n_nodes)
-		.for_each(|i_node| {
+		.for_each(|i_node| unsafe {
 			if !self.is_leaf(i_node) {
-				let depth = self.nodes[i_node].depth;
+				let depth = self.nodes.get_unchecked(i_node).depth;
 				(0..FANOUT).for_each(|i_child| {
 					let i_child = self.child_of(i_node, i_child);
-					let child = &mut self.nodes[i_child];
+					let child = self.nodes.get_unchecked_mut(i_child);
 					child.depth = depth+1;
 				});
-				self.nodes[i_node].children_counts = Some([0;FANOUT]);
-				self.nodes[i_node].first_bit = depth * self.n_bits_per_layer;
+				self.nodes.get_unchecked_mut(i_node).children_counts = Some([0;FANOUT]);
+				self.nodes.get_unchecked_mut(i_node).first_bit = depth * self.n_bits_per_layer;
 			}
 		});
 		self.initialize_quantile_bounds();
@@ -83,40 +83,38 @@ impl<B: Bits, D: Data<Elem=B>+MaybeSend+MaybeSync, const FANOUT: usize> THX<B, D
 			 while bit_count < self.n_bits_per_layer && binomial.distribution(bit_count as f64) < target_percentile {
 				 bit_count += 1;
 			 }
-			 self.quantile_bounds[i] = bit_count;
+			 unsafe { *self.quantile_bounds.get_unchecked_mut(i) = bit_count; }
 			 i += 1;
 		 }
 	}
 	fn build_node(&mut self, node: usize, data_idx: Vec<usize>) {
-		if self.nodes[node].depth == self.height {
-			/* This is a leaf */
-			self.nodes[node].stored_objects = Some(data_idx);
-			self.nodes[node].is_leaf = true;
-		} else {
-			/* Get bit counts for the specified range */
-			let bit_counts = self.get_counts(&data_idx, self.nodes[node].first_bit);
-			self.nodes[node].children_counts = Some([0; FANOUT]);
-			/* For each child collect relevant indices and build child nodes */
-			(0..FANOUT)
-			.for_each(|i_child| {
-				let lo = if i_child==0 {0} else {self.quantile_bounds[i_child-1]};
-				let hi = self.quantile_bounds[i_child];
-				// println!("Node: {:}; i_child: {:}; lo: {:}; hi: {:}", node, i_child, lo, hi);
-				let subset_indices: Vec<usize> = bit_counts.iter()
-				.enumerate()
-				.filter(|(_, &cnt)| lo <= cnt && cnt < hi)
-				.map(|(i, _)| data_idx[i])
-				.collect();
-				// (0..100).map(|i| subset_indices[i]).map(|i| bit_counts[i]).for_each(|cnt| print!("{:>3}", cnt));
-				// println!("");
-				self.nodes[node].children_counts.as_mut().unwrap()[i_child] = subset_indices.len();
-				self.build_node(self.child_of(node, i_child), subset_indices);
-			});
+		unsafe {
+			if self.nodes.get_unchecked(node).depth == self.height {
+				/* This is a leaf */
+				self.nodes.get_unchecked_mut(node).stored_objects = Some(data_idx);
+				self.nodes.get_unchecked_mut(node).is_leaf = true;
+			} else {
+				/* Get bit counts for the specified range */
+				let bit_counts = self.get_counts(&data_idx, self.nodes.get_unchecked(node).first_bit);
+				self.nodes.get_unchecked_mut(node).children_counts = Some([0; FANOUT]);
+				/* For each child collect relevant indices and build child nodes */
+				(0..FANOUT)
+				.for_each(|i_child| {
+					let lo = if i_child==0 {0} else {*self.quantile_bounds.get_unchecked(i_child-1)};
+					let hi = *self.quantile_bounds.get_unchecked(i_child);
+					let subset_indices: Vec<usize> = bit_counts.iter()
+					.enumerate()
+					.filter(|(_, &cnt)| lo <= cnt && cnt < hi)
+					.map(|(i, _)| *data_idx.get_unchecked(i))
+					.collect();
+					*self.nodes.get_unchecked_mut(node).children_counts.as_mut().unwrap_unchecked().get_unchecked_mut(i_child) = subset_indices.len();
+					self.build_node(self.child_of(node, i_child), subset_indices);
+				});
+			}
 		}
 	}
 	fn get_counts(&self, data_idx: &Vec<usize>, first_bit: usize) -> Vec<usize> {
 		let last_bit_exclusive = (first_bit+self.n_bits_per_layer).min(self.total_bits);
-		// println!("{:>3}-{:>3}; {:>3}", first_bit, last_bit_exclusive, self.total_bits);
 		let mut ret = vec![0; data_idx.len()];
 		par_iter(data_idx.iter().zip(ret.iter_mut()))
 		.for_each(|(&i, target)| {
@@ -137,52 +135,54 @@ impl<B: Bits, D: Data<Elem=B>+MaybeSend+MaybeSync, const FANOUT: usize> THX<B, D
 		nn_heap.reserve(k_neighbors);
 		let mut upper_bound = usize::MAX;
 		// let mut visited_nodes = 0;
-		while refinement_heap.size() > 0 {
-			// visited_nodes += 1;
-			/* Get the next best candidate node to search for neighbors */
-			let (lower_bound, i_node) = refinement_heap.pop().unwrap();
-			/* If the lower bound for distances is larger than the current largest neighbor distance, we can return */
-			if nn_heap.size() >= k_neighbors && lower_bound >= upper_bound { break; }
-			/* If the current node is a leaf, test neighbors, otherwise refine with children */
-			if self.is_leaf(i_node) {
-				let object_idx = self.nodes[i_node].stored_objects.as_ref().unwrap();
-				object_idx.iter()
-				.map(|&i_vec| (i_vec, self.data.row(i_vec).hamming_dist_same(&query.view())))
-				.for_each(|(i_vec, dist)| {
-					if nn_heap.size() < k_neighbors {
-						nn_heap.push(dist, i_vec);
-						if nn_heap.size() == k_neighbors { upper_bound = dist; }
-					} else if nn_heap.peek().unwrap().0 > dist {
-						nn_heap.pop();
-						nn_heap.push(dist, i_vec);
-						upper_bound = dist;
-					}
-				});
-			} else {
-				let first_bit = self.nodes[i_node].first_bit;
-				let last_bit_exclusive = (first_bit+self.n_bits_per_layer).min(self.total_bits);
-				let bit_count = query.view().count_bits_range_unchecked(first_bit, last_bit_exclusive);
-				(0..FANOUT).for_each(|i_child| {
-					let lo = if i_child==0 {0} else {self.quantile_bounds[i_child-1]};
-					let hi = self.quantile_bounds[i_child];
-					let i_child = self.child_of(i_node, i_child);
-					if lo <= bit_count && bit_count < hi {
-						refinement_heap.push(lower_bound+0, i_child);
-					} else if bit_count < lo {
-						refinement_heap.push(lower_bound+lo-bit_count, i_child);
-					} else {
-						refinement_heap.push(lower_bound+bit_count-hi, i_child);
-					}
-				});
+		unsafe {
+			while refinement_heap.size() > 0 {
+				// visited_nodes += 1;
+				/* Get the next best candidate node to search for neighbors */
+				let (lower_bound, i_node) = refinement_heap.pop().unwrap_unchecked();
+				/* If the lower bound for distances is larger than the current largest neighbor distance, we can return */
+				if nn_heap.size() >= k_neighbors && lower_bound >= upper_bound { break; }
+				/* If the current node is a leaf, test neighbors, otherwise refine with children */
+				if self.is_leaf(i_node) {
+					let object_idx = self.nodes.get_unchecked(i_node).stored_objects.as_ref().unwrap_unchecked();
+					object_idx.iter()
+					.map(|&i_vec| (i_vec, self.data.row(i_vec).hamming_dist_same(&query.view())))
+					.for_each(|(i_vec, dist)| {
+						if nn_heap.size() < k_neighbors {
+							nn_heap.push(dist, i_vec);
+							if nn_heap.size() == k_neighbors { upper_bound = dist; }
+						} else if nn_heap.peek().unwrap_unchecked().0 > dist {
+							nn_heap.pop();
+							nn_heap.push(dist, i_vec);
+							upper_bound = dist;
+						}
+					});
+				} else {
+					let first_bit = self.nodes.get_unchecked(i_node).first_bit;
+					let last_bit_exclusive = (first_bit+self.n_bits_per_layer).min(self.total_bits);
+					let bit_count = query.view().count_bits_range_unchecked(first_bit, last_bit_exclusive);
+					(0..FANOUT).for_each(|i_child| {
+						let lo = if i_child==0 {0} else {*self.quantile_bounds.get_unchecked(i_child-1)};
+						let hi = *self.quantile_bounds.get_unchecked(i_child);
+						let i_child = self.child_of(i_node, i_child);
+						if lo <= bit_count && bit_count < hi {
+							refinement_heap.push(lower_bound+0, i_child);
+						} else if bit_count < lo {
+							refinement_heap.push(lower_bound+lo-bit_count, i_child);
+						} else {
+							refinement_heap.push(lower_bound+bit_count-hi, i_child);
+						}
+					});
+				}
 			}
 		}
 		// println!("Visited {:>3} nodes", visited_nodes);
 		let mut ret_dists = Array1::zeros(k_neighbors);
 		let mut ret_idx = Array1::zeros(k_neighbors);
-		(0..k_neighbors).rev().for_each(|i| {
-			let (dist, idx) = nn_heap.pop().unwrap();
-			ret_dists[i] = dist;
-			ret_idx[i] = idx;
+		(0..k_neighbors).rev().for_each(|i| unsafe {
+			let (dist, idx) = nn_heap.pop().unwrap_unchecked();
+			*ret_dists.uget_mut(i) = dist;
+			*ret_idx.uget_mut(i) = idx;
 		});
 		(ret_dists, ret_idx)
 	}
@@ -211,45 +211,47 @@ impl<B: Bits, D: Data<Elem=B>+MaybeSend+MaybeSync, const FANOUT: usize> THX<B, D
 		refinement_heap.push(0, 0);
 		let mut nn_heap: MaxHeap<usize, usize> = MaxHeap::new();
 		// let mut visited_nodes = 0;
-		while refinement_heap.size() > 0 {
-			// visited_nodes += 1;
-			/* Get the next best candidate node to search for neighbors */
-			let (lower_bound, i_node) = refinement_heap.pop().unwrap();
-			/* If the lower bound for distances is larger than the maximum distance, we can return */
-			if lower_bound > max_dist { break; }
-			/* If the current node is a leaf, test neighbors, otherwise refine with children */
-			if self.is_leaf(i_node) {
-				let object_idx = self.nodes[i_node].stored_objects.as_ref().unwrap();
-				object_idx.iter()
-				.map(|&i_vec| (i_vec, self.data.row(i_vec).hamming_dist_same(&query.view())))
-				.filter(|(_, dist)| *dist <= max_dist)
-				.for_each(|(i_vec, dist)| nn_heap.push(dist, i_vec));
-			} else {
-				let first_bit = self.nodes[i_node].first_bit;
-				let last_bit_exclusive = (first_bit+self.n_bits_per_layer).min(self.total_bits);
-				let bit_count = query.view().count_bits_range_unchecked(first_bit, last_bit_exclusive);
-				(0..FANOUT).for_each(|i_child| {
-					let lo = if i_child==0 {0} else {self.quantile_bounds[i_child-1]};
-					let hi = self.quantile_bounds[i_child];
-					let i_child = self.child_of(i_node, i_child);
-					if lo <= bit_count && bit_count < hi {
-						refinement_heap.push(lower_bound+0, i_child);
-					} else if bit_count < lo {
-						refinement_heap.push(lower_bound+lo-bit_count, i_child);
-					} else {
-						refinement_heap.push(lower_bound+bit_count-hi, i_child);
-					}
-				});
+		unsafe {
+			while refinement_heap.size() > 0 {
+				// visited_nodes += 1;
+				/* Get the next best candidate node to search for neighbors */
+				let (lower_bound, i_node) = refinement_heap.pop().unwrap_unchecked();
+				/* If the lower bound for distances is larger than the maximum distance, we can return */
+				if lower_bound > max_dist { break; }
+				/* If the current node is a leaf, test neighbors, otherwise refine with children */
+				if self.is_leaf(i_node) {
+					let object_idx = self.nodes.get_unchecked(i_node).stored_objects.as_ref().unwrap_unchecked();
+					object_idx.iter()
+					.map(|&i_vec| (i_vec, self.data.row(i_vec).hamming_dist_same(&query.view())))
+					.filter(|(_, dist)| *dist <= max_dist)
+					.for_each(|(i_vec, dist)| nn_heap.push(dist, i_vec));
+				} else {
+					let first_bit = self.nodes.get_unchecked(i_node).first_bit;
+					let last_bit_exclusive = (first_bit+self.n_bits_per_layer).min(self.total_bits);
+					let bit_count = query.view().count_bits_range_unchecked(first_bit, last_bit_exclusive);
+					(0..FANOUT).for_each(|i_child| {
+						let lo = if i_child==0 {0} else {*self.quantile_bounds.get_unchecked(i_child-1)};
+						let hi = *self.quantile_bounds.get_unchecked(i_child);
+						let i_child = self.child_of(i_node, i_child);
+						if lo <= bit_count && bit_count < hi {
+							refinement_heap.push(lower_bound+0, i_child);
+						} else if bit_count < lo {
+							refinement_heap.push(lower_bound+lo-bit_count, i_child);
+						} else {
+							refinement_heap.push(lower_bound+bit_count-hi, i_child);
+						}
+					});
+				}
 			}
 		}
 		// println!("Visited {:>3} nodes", visited_nodes);
 		let heap_size = nn_heap.size();
 		let mut ret_dists = vec![0; heap_size];
 		let mut ret_idx = vec![0; heap_size];
-		(0..heap_size).rev().for_each(|i| {
-			let (dist, idx) = nn_heap.pop().unwrap();
-			ret_dists[i] = dist;
-			ret_idx[i] = idx;
+		(0..heap_size).rev().for_each(|i| unsafe {
+			let (dist, idx) = nn_heap.pop().unwrap_unchecked();
+			*ret_dists.get_unchecked_mut(i) = dist;
+			*ret_idx.get_unchecked_mut(i) = idx;
 		});
 		(ret_dists, ret_idx)
 	}

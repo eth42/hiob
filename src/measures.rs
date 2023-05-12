@@ -32,16 +32,18 @@ pub trait InnerProduct<N: Float>: Clone {
 	fn cross_prods
 	<D1: Data<Elem=N>, D2: Data<Elem=N>>
 	(&self, objs1: &ArrayBase<D1, Ix2>, objs2: &ArrayBase<D2, Ix2>) -> Array2<N> {
-		Array::from_shape_vec(
-			(objs1.len_of(Axis(0)), objs2.len_of(Axis(0))),
-			objs1.outer_iter()
-			.flat_map(|obj1|
-				objs2.outer_iter()
-				.map(|obj2| self.prod(&obj1, &obj2))
-				.collect::<Vec<N>>()
-			)
-			.collect()
-		).unwrap()
+		unsafe {
+			Array::from_shape_vec(
+				(objs1.len_of(Axis(0)), objs2.len_of(Axis(0))),
+				objs1.outer_iter()
+				.flat_map(|obj1|
+					objs2.outer_iter()
+					.map(|obj2| self.prod(&obj1, &obj2))
+					.collect::<Vec<N>>()
+				)
+				.collect()
+			).unwrap_unchecked()
+		}
 	}
 	#[inline(always)]
 	fn self_prod
@@ -90,16 +92,18 @@ pub trait InnerProduct<N: Float>: Clone {
 	fn cross_induced_dists
 	<D1: Data<Elem=N>, D2: Data<Elem=N>>
 	(&self, objs1: &ArrayBase<D1, Ix2>, objs2: &ArrayBase<D2, Ix2>) -> Array2<N> {
-		Array::from_shape_vec(
-			(objs1.len_of(Axis(0)), objs2.len_of(Axis(0))),
-			objs1.outer_iter()
-			.flat_map(|obj1|
-				objs2.outer_iter()
-				.map(|obj2| self.induced_dist(&obj1, &obj2))
-				.collect::<Vec<N>>()
-			)
-			.collect()
-		).unwrap()
+		unsafe {
+			Array::from_shape_vec(
+				(objs1.len_of(Axis(0)), objs2.len_of(Axis(0))),
+				objs1.outer_iter()
+				.flat_map(|obj1|
+					objs2.outer_iter()
+					.map(|obj2| self.induced_dist(&obj1, &obj2))
+					.collect::<Vec<N>>()
+				)
+				.collect()
+			).unwrap_unchecked()
+		}
 	}
 }
 
@@ -202,7 +206,7 @@ impl<N: Float> InnerProduct<N> for MahalanobisKernel<N> {
 		#[cfg(feature="count_operations")]
 		unsafe {PROD_COUNTER += 1;}
 		obj1.into_iter().enumerate().zip(obj2.into_iter().enumerate())
-		.map(|((i,&a),(j,&b))| a * b * self.inv_cov[[i,j]])
+		.map(|((i,&a),(j,&b))| a * b * unsafe { *self.inv_cov.uget([i,j]) })
 		.reduce(|a, b| a+b)
 		.unwrap_or(num::Zero::zero())
 	}
@@ -311,7 +315,7 @@ impl<N: Float, D: Distance<N>> InnerProduct<N> for InducedInnerProduct<N,D> {
 		let norm1 = self.dist.dist(&zeros, obj1);
 		let norm2 = self.dist.dist(&zeros, obj2);
 		let dist12 = self.dist.dist(obj1, obj2);
-		(norm1*norm1 + norm2*norm2 - dist12*dist12) / N::from(2).unwrap()
+		(norm1*norm1 + norm2*norm2 - dist12*dist12) / unsafe { N::from(2).unwrap_unchecked() }
 	}
 	#[inline(always)]
 	fn induced_dist

@@ -17,99 +17,6 @@ impl BinarizationEvaluator {
 
 	pub fn new() -> Self { Self{} }
 
-	/* Unused code
-	pub fn brute_force_k_nearest<
-		T1,
-		T2: HeapKey,
-		D: Data<Elem=T1>,
-		R: FromIterator<usize>,
-		F: Fn(&ArrayView1<T1>) -> T2
-	>(
-		&self,
-		data: &ArrayBase<D, Ix2>,
-		fun: F,
-		smallests: bool,
-		k: usize
-	) -> R {
-		if smallests {
-			let mut heap = MaxHeap::<T2, usize>::new();
-			data.axis_iter(Axis(0))
-			.enumerate()
-			.for_each(|(i_row, row)| {
-				let v = fun(&row);
-				if heap.size() < k {
-					heap.push(v, i_row);
-				} else if heap.peek().unwrap().0 > v {
-					heap.pop();
-					heap.push(v, i_row);
-				}
-			});
-			heap.into_iter().map(|(_,v)| v).collect::<R>()
-		} else {
-			let mut heap = MinHeap::<T2, usize>::new();
-			data.axis_iter(Axis(0))
-			.enumerate()
-			.for_each(|(i_row, row)| {
-				let v = fun(&row);
-				if heap.size() < k {
-					heap.push(v, i_row);
-				} else if heap.peek().unwrap().0 < v {
-					heap.pop();
-					heap.push(v, i_row);
-				}
-			});
-			heap.into_iter().map(|(_,v)| v).collect::<R>()
-		}
-		// let values = data.axis_iter(Axis(0))
-		// .map(|v| fun(&v))
-		// .collect::<Vec<T2>>();
-		// let mut data_order = (0..data.shape()[0]).collect::<Vec<usize>>();
-		// data_order.sort_by(|&i, &j| values[i].partial_cmp(&values[j]).unwrap());
-		// if smallests {
-		// 	data_order[..k].iter()
-		// 	.map(|&i| i)
-		// 	.collect::<R>()
-		// } else {
-		// 	data_order[data_order.len()-k..].iter()
-		// 	.map(|&i| i)
-		// 	.collect::<R>()
-		// }
-	}
-
-	pub fn brute_force_k_nearests<
-		T1: MaybeSend+MaybeSync,
-		T2: HeapKey,
-		D1: Data<Elem=T1>+MaybeSend+MaybeSync,
-		D2: Data<Elem=T1>,
-		F: Fn(&ArrayView1<T1>, &ArrayView1<T1>) -> T2+MaybeSync
-	>(
-		&self,
-		data: &ArrayBase<D1, Ix2>,
-		queries: &ArrayBase<D2, Ix2>,
-		fun: F,
-		smallests: bool,
-		k: usize
-	) -> Array2<usize> {
-		let mut vec_of_vec = named_par_iter(queries.axis_iter(Axis(0)).enumerate(), "Computing neighbors")
-		.map(|(i,q)| {
-			(i,self.brute_force_k_nearest(
-				data,
-				|x| fun(&q, x),
-				smallests,
-				k
-			))
-		})
-		.collect::<Vec<(usize,Vec<usize>)>>();
-		vec_of_vec.sort_by(|(i1, _), (i2, _)| i1.cmp(i2));
-		let vec_of_vec = vec_of_vec.into_iter().map(|(_, x)| x).collect::<Vec<Vec<usize>>>();
-		let mut ret = Array2::zeros([queries.shape()[0], k]);
-		ret.axis_iter_mut(Axis(0))
-		.zip(vec_of_vec.into_iter())
-		.for_each(|(mut row, vec)| row.assign(&Array1::from_shape_vec(k, vec).unwrap()));
-		ret
-	}
-	*/
-
 	pub fn brute_force_k_smallest_hamming<
 		B: Bits,
 		D1: Data<Elem=B>+MaybeSync,
@@ -132,18 +39,18 @@ impl BinarizationEvaluator {
 			heap.reserve(k);
 			data.axis_iter(Axis(0))
 			.enumerate()
-			.for_each(|(i_row, row)| {
+			.for_each(|(i_row, row)| unsafe {
 				let v = row.hamming_dist_same(&q);
 				if heap.size() < k {
 					heap.push(v, i_row);
-				} else if heap.peek().unwrap().0 > v {
+				} else if heap.peek().unwrap_unchecked().0 > v {
 					heap.pop();
 					heap.push(v, i_row);
 				}
 			});
-			heap.into_iter().zip((0..k).rev()).for_each(|((dist, idx), i_nn)| {
-				nn_dist[i_nn] = dist;
-				nn_idx[i_nn] = idx;
+			heap.into_iter().zip((0..k).rev()).for_each(|((dist, idx), i_nn)| unsafe {
+				*nn_dist.uget_mut(i_nn) = dist;
+				*nn_idx.uget_mut(i_nn) = idx;
 			})
 		});
 		(nn_dists, nn_idxs)
@@ -173,18 +80,18 @@ impl BinarizationEvaluator {
 			heap.reserve(k);
 			data.axis_iter(Axis(0))
 			.enumerate()
-			.for_each(|(i_row, row)| {
+			.for_each(|(i_row, row)| unsafe {
 				let v = prod.prod(&row,&q);
 				if heap.size() < k {
 					heap.push(v, i_row);
-				} else if heap.peek().unwrap().0 < v {
+				} else if heap.peek().unwrap_unchecked().0 < v {
 					heap.pop();
 					heap.push(v, i_row);
 				}
 			});
-			heap.into_iter().zip((0..k).rev()).for_each(|((dist, idx), i_nn)| {
-				nn_dist[i_nn] = dist;
-				nn_idx[i_nn] = idx;
+			heap.into_iter().zip((0..k).rev()).for_each(|((dist, idx), i_nn)| unsafe {
+				*nn_dist.uget_mut(i_nn) = dist;
+				*nn_idx.uget_mut(i_nn) = idx;
 			})
 		});
 		(nn_dots, nn_idxs)

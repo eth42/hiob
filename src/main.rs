@@ -146,7 +146,7 @@ fn _test_random() {
 	.map(|row| prod.prod(&row,&row).sqrt())
 	.collect::<Vec<f32>>();
 	(0..data.shape()[0]).for_each(|i| data.row_mut(i).mapv_inplace(|v| v/norms[i]));
-	let mut hiob: HIOB<f32, u64> = HIOB::new(data.clone(), 100, None, None);
+	let mut hiob: HIOB<f32, u64> = HIOB::new(data.clone(), 100, None, None, None, None);
 
 	// _print_hiob_oberlaps(&hiob);
 	_print_hiob_sim_sums(&hiob);
@@ -176,7 +176,7 @@ fn _test_gen_hiob<F: HIOBFloat, B: HIOBBits>(data: &Array2<F>, n_bits: usize, n_
 	#[cfg(feature = "progressbars")]
 	println!("");
 	_=io::stdout().flush();
-	let mut hiob: HIOB<F, B> = HIOB::new(data.to_owned(), n_bits, None, None);
+	let mut hiob: HIOB<F, B> = HIOB::new(data.to_owned(), n_bits, None, None, None, None);
 	println!("done");
 	
 	_print_hiob_sim_sums(&hiob);
