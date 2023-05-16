@@ -7,6 +7,8 @@ mod eval;
 mod pybridge;
 mod index;
 mod heaps;
+mod random;
+mod data;
 
 use std::io::{self, Write};
 

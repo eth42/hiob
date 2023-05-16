@@ -1,13 +1,14 @@
 use pyo3::prelude::*;
 use numpy::{PyArray1,PyArray2,PyReadonlyArray1,PyReadonlyArray2,ToPyArray};
 use paste::paste;
-use ndarray::OwnedRepr;
+use ndarray::{Array2,OwnedRepr};
 #[cfg(feature="parallel")]
 use {rayon::ThreadPoolBuilder, pyo3::exceptions::PyValueError};
 #[cfg(not(feature="parallel"))]
 use pyo3::exceptions::PyWarning;
 	
-use crate::binarizer::HIOB;
+use crate::binarizer::{HIOB,StochasticHIOB};
+use crate::data::{read_h5_dataset};
 use crate::eval::BinarizationEvaluator;
 use crate::bit_vectors::BitVector;
 use crate::index::THX;
@@ -47,6 +48,14 @@ macro_rules! hiob_struct_gen {
 				}
 				pub fn binarize<'py>(&self, py: Python<'py>, queries: PyReadonlyArray2<$prec_type>) -> &'py PyArray2<$bin_type> {
 					self.hiob.binarize(&queries.as_array()).to_pyarray(py)
+				}
+				pub fn binarize_h5<'py>(&self, py: Python<'py>, file: String, dataset: String, batch_size: Option<usize>) -> PyResult<&'py PyArray2<$bin_type>> {
+					let result = self.hiob.binarize_h5(file.as_str(), dataset.as_str(), batch_size.unwrap_or(1000));
+					if result.is_ok() {
+						Ok(result.unwrap().to_pyarray(py))
+					} else {
+						Err(PyValueError::new_err(result.unwrap_err().to_string()))
+					}
 				}
 				#[getter]
 				pub fn get_n_data(&self) -> PyResult<usize> {
@@ -112,7 +121,8 @@ macro_rules! hiob_struct_gen {
 		}
 	};
 }
-hiob_struct_gen!((f32, f64), (bool, i8, i16, i32, i64, u8, u16, u32, u64));
+// hiob_struct_gen!((f32, f64), (bool, i8, i16, i32, i64, u8, u16, u32, u64));
+hiob_struct_gen!((f32, f64), (bool, u8, u16, u32, u64));
 macro_rules! hiob_python_export {
 	($module: ident, ($($pts:ty),*), $bts:tt) => {
 		$(hiob_python_export!($module, $pts, $bts);)*
@@ -127,6 +137,214 @@ macro_rules! hiob_python_export {
 	};
 }
 
+
+macro_rules! stochastic_hiob_struct_gen {
+	($datasource: ident, ($($pts:ty),*), $bts:tt) => {
+		$(stochastic_hiob_struct_gen!($datasource, $pts, $bts);)*
+	};
+	($datasource: ident, $prec_type: ty, ($($bts:ty),*)) => {
+		$(stochastic_hiob_struct_gen!($datasource, $prec_type, $bts);)*
+	};
+	(H5, $prec_type: ty, $bin_type: ty) => {
+		paste! {
+			#[allow(non_camel_case_types)]
+			#[pyclass]
+			pub struct [<StochasticHIOB_H5_ $prec_type _ $bin_type>] {
+				shiob: StochasticHIOB<$prec_type,$bin_type,hdf5::Dataset>
+			}
+			#[pymethods]
+			impl [<StochasticHIOB_H5_ $prec_type _ $bin_type>] {
+				#[new]
+				pub fn new(
+					file: String,
+					dataset: String,
+					sample_size: usize,
+					its_per_sample: usize,
+					n_bits: usize,
+					perm_gen_rounds: Option<usize>,
+					scale: Option<$prec_type>,
+					centers: Option<PyReadonlyArray2<$prec_type>>,
+					init_greedy: Option<bool>,
+					init_ransac: Option<bool>
+				) -> PyResult<Self> {
+					let data_source_result = read_h5_dataset(file.as_str(), dataset.as_str());
+					if data_source_result.is_ok() {
+						Ok(Self{shiob: StochasticHIOB::new(
+							data_source_result.unwrap(),
+							sample_size,
+							its_per_sample,
+							n_bits,
+							perm_gen_rounds,
+							scale,
+							if centers.is_some() {
+								Some(centers.unwrap().as_array().into_owned())
+							} else { None },
+							init_greedy,
+							init_ransac
+						)})
+					} else {
+						Err(PyValueError::new_err(data_source_result.unwrap_err().to_string()))
+					}
+				}
+			}
+			stochastic_hiob_struct_gen!(funs H5, $prec_type, $bin_type);
+		}
+	};
+	(ND, $prec_type: ty, $bin_type: ty) => {
+		paste! {
+			#[allow(non_camel_case_types)]
+			#[pyclass]
+			pub struct [<StochasticHIOB_ND_ $prec_type _ $bin_type>] {
+				shiob: StochasticHIOB<$prec_type,$bin_type,Array2<$prec_type>>
+			}
+			#[pymethods]
+			impl [<StochasticHIOB_ND_ $prec_type _ $bin_type>] {
+				#[new]
+				pub fn new(
+					data: PyReadonlyArray2<$prec_type>,
+					sample_size: usize,
+					its_per_sample: usize,
+					n_bits: usize,
+					perm_gen_rounds: Option<usize>,
+					scale: Option<$prec_type>,
+					centers: Option<PyReadonlyArray2<$prec_type>>,
+					init_greedy: Option<bool>,
+					init_ransac: Option<bool>
+				) -> PyResult<Self> {
+					Ok(Self{shiob: StochasticHIOB::new(
+						data.as_array().into_owned(),
+						sample_size,
+						its_per_sample,
+						n_bits,
+						perm_gen_rounds,
+						scale,
+						if centers.is_some() {
+							Some(centers.unwrap().as_array().into_owned())
+						} else { None },
+						init_greedy,
+						init_ransac
+					)})
+				}
+			}
+			stochastic_hiob_struct_gen!(funs ND, $prec_type, $bin_type);
+		}
+	};
+	(funs $datasource: ident, $prec_type: ty, $bin_type: ty) => {
+		paste! {
+			#[pymethods]
+			impl [<StochasticHIOB_ $datasource _ $prec_type _ $bin_type>] {
+				pub fn run(&mut self, n_iterations: usize) {
+					self.shiob.run(n_iterations);
+				}
+				pub fn binarize<'py>(&self, py: Python<'py>, queries: PyReadonlyArray2<$prec_type>) -> &'py PyArray2<$bin_type> {
+					self.shiob.binarize(&queries.as_array()).to_pyarray(py)
+				}
+				pub fn binarize_h5<'py>(&self, py: Python<'py>, file: String, dataset: String, batch_size: Option<usize>) -> PyResult<&'py PyArray2<$bin_type>> {
+					let result = self.shiob.binarize_h5(file.as_str(), dataset.as_str(), batch_size.unwrap_or(1000));
+					if result.is_ok() {
+						Ok(result.unwrap().to_pyarray(py))
+					} else {
+						Err(PyValueError::new_err(result.unwrap_err().to_string()))
+					}
+				}
+				#[getter]
+				pub fn get_sample_size(&self) -> PyResult<usize> {
+					Ok(self.shiob.get_sample_size())
+				}
+				#[setter]
+				pub fn set_sample_size(&mut self, value: usize) -> PyResult<()> {
+					self.shiob.set_sample_size(value); Ok(())
+				}
+				#[getter]
+				pub fn get_its_per_sample(&self) -> PyResult<usize> {
+					Ok(self.shiob.get_its_per_sample())
+				}
+				#[setter]
+				pub fn set_its_per_sample(&mut self, value: usize) -> PyResult<()> {
+					self.shiob.set_its_per_sample(value); Ok(())
+				}
+				#[getter]
+				pub fn get_n_samples(&self) -> PyResult<usize> {
+					Ok(self.shiob.get_n_samples())
+				}
+				#[getter]
+				pub fn get_n_dims(&self) -> PyResult<usize> {
+					Ok(self.shiob.get_n_dims())
+				}
+				#[getter]
+				pub fn get_n_bits(&self) -> PyResult<usize> {
+					Ok(self.shiob.get_n_bits())
+				}
+				#[getter]
+				pub fn get_scale(&self) -> PyResult<$prec_type> {
+					Ok(self.shiob.get_scale())
+				}
+				#[setter]
+				pub fn set_scale(&mut self, scale: $prec_type) -> PyResult<()> {
+					Ok(self.shiob.set_scale(scale))
+				}
+				#[getter]
+				pub fn get_data<'py>(&self, py: Python<'py>) -> &'py PyArray2<$prec_type> {
+					self.shiob.get_data().to_pyarray(py)
+				}
+				#[getter]
+				pub fn get_centers<'py>(&self, py: Python<'py>) -> &'py PyArray2<$prec_type> {
+					self.shiob.get_centers().to_pyarray(py)
+				}
+				#[getter]
+				pub fn get_data_bins<'py>(&self, py: Python<'py>) -> &'py PyArray2<$bin_type> {
+					self.shiob.get_data_bins().to_pyarray(py)
+				}
+				#[getter]
+				pub fn get_overlap_mat<'py>(&self, py: Python<'py>) -> &'py PyArray2<usize> {
+					self.shiob.get_overlap_mat().to_pyarray(py)
+				}
+				#[getter]
+				pub fn get_sim_mat<'py>(&self, py: Python<'py>) -> &'py PyArray2<f64> {
+					self.shiob.get_sim_mat().to_pyarray(py)
+				}
+				#[getter]
+				pub fn get_sim_sums<'py>(&self, py: Python<'py>) -> &'py PyArray1<f64> {
+					self.shiob.get_sim_sums().to_pyarray(py)
+				}
+				#[getter]
+				pub fn get_update_parallel(&self) -> PyResult<bool> {
+					Ok(self.shiob.get_update_parallel())
+				}
+				#[setter]
+				pub fn set_update_parallel(&mut self, b: bool) -> PyResult<()> {
+					Ok(self.shiob.set_update_parallel(b))
+				}
+				#[getter]
+				pub fn get_displace_parallel(&self) -> PyResult<bool> {
+					Ok(self.shiob.get_displace_parallel())
+				}
+				#[setter]
+				pub fn set_displace_parallel(&mut self, b: bool) -> PyResult<()> {
+					Ok(self.shiob.set_displace_parallel(b))
+				}
+			}
+		}
+	}
+}
+// stochastic_hiob_struct_gen!(H5, (f32, f64), (bool, i8, i16, i32, i64, u8, u16, u32, u64));
+// stochastic_hiob_struct_gen!(ND, (f32, f64), (bool, i8, i16, i32, i64, u8, u16, u32, u64));
+stochastic_hiob_struct_gen!(H5, (f32, f64), (bool, u8, u16, u32, u64));
+stochastic_hiob_struct_gen!(ND, (f32, f64), (bool, u8, u16, u32, u64));
+macro_rules! stochastic_hiob_python_export {
+	($module: ident, ($($pts:ty),*), $bts:tt) => {
+		$(stochastic_hiob_python_export!($module, $pts, $bts);)*
+	};
+	($module: ident, $prec_type: ty, ($($bts:ty),*)) => {
+		$(stochastic_hiob_python_export!($module, $prec_type, $bts);)*
+	};
+	($module: ident, $prec_type: ty, $bin_type: ty) => {
+		paste!{
+			$module.add_class::<[<StochasticHIOB_ND_ $prec_type _ $bin_type>]>()?;
+			$module.add_class::<[<StochasticHIOB_H5_ $prec_type _ $bin_type>]>()?;
+		}
+	};
+}
 
 
 macro_rules! eval_fun_gen {
@@ -277,8 +495,10 @@ pub struct RawBinarizationEvaluator {
 }
 eval_fun_gen!();
 eval_fun_gen_p!(f32, f64);
-eval_fun_gen_b!(bool, i8, i16, i32, i64, u8, u16, u32, u64);
-eval_fun_gen_pb!((f32, f64), (bool, i8, i16, i32, i64, u8, u16, u32, u64));
+// eval_fun_gen_b!(bool, i8, i16, i32, i64, u8, u16, u32, u64);
+eval_fun_gen_b!(bool, u8, u16, u32, u64);
+// eval_fun_gen_pb!((f32, f64), (bool, i8, i16, i32, i64, u8, u16, u32, u64));
+eval_fun_gen_pb!((f32, f64), (bool, u8, u16, u32, u64));
 
 
 macro_rules! thx_struct_gen {
@@ -332,7 +552,8 @@ macro_rules! thx_struct_gen {
 		}
 	}
 }
-thx_struct_gen!((bool, i8, i16, i32, i64, u8, u16, u32, u64), (2,3,4,5,6,7,8,9,10));
+// thx_struct_gen!((bool, i8, i16, i32, i64, u8, u16, u32, u64), (2,3,4,5,6,7,8,9,10));
+thx_struct_gen!((bool, u8, u16, u32, u64), (2,3,4,5,6,7,8,9,10));
 macro_rules! thx_python_export {
 	($module: ident, ($($bts:ty),*), $fs:tt) => {
 		$(thx_python_export!($module, $bts, $fs);)*
@@ -367,8 +588,12 @@ pub fn limit_threads(_num_threads: usize) -> Result<(), PyErr> {
 /* Declaration of the python package generated by maturin. */
 #[pymodule]
 fn hiob(_py: Python, m: &PyModule) -> PyResult<()> {
-	hiob_python_export!(m, (f32, f64), (bool, i8, i16, i32, i64, u8, u16, u32, u64));
-	thx_python_export!(m, (bool, i8, i16, i32, i64, u8, u16, u32, u64), (2,3,4,5,6,7,8,9,10));
+	// hiob_python_export!(m, (f32, f64), (bool, i8, i16, i32, i64, u8, u16, u32, u64));
+	// stochastic_hiob_python_export!(m, (f32, f64), (bool, i8, i16, i32, i64, u8, u16, u32, u64));
+	// thx_python_export!(m, (bool, i8, i16, i32, i64, u8, u16, u32, u64), (2,3,4,5,6,7,8,9,10));
+	hiob_python_export!(m, (f32, f64), (bool, u8, u16, u32, u64));
+	stochastic_hiob_python_export!(m, (f32, f64), (bool, u8, u16, u32, u64));
+	thx_python_export!(m, (bool, u8, u16, u32, u64), (2,3,4,5,6,7,8,9,10));
 	m.add_class::<RawBinarizationEvaluator>()?;
 	m.add_wrapped(wrap_pyfunction!(limit_threads))?;
 	Ok(())

@@ -91,11 +91,11 @@ macro_rules! int_bits {
 		}
 	};
 }
-int_bits!(i8, 7);
-int_bits!(i16, 15);
-int_bits!(i32, 31);
-int_bits!(i64, 63);
-int_bits!(i128, 127);
+// int_bits!(i8, 7);
+// int_bits!(i16, 15);
+// int_bits!(i32, 31);
+// int_bits!(i64, 63);
+// int_bits!(i128, 127);
 int_bits!(u8, 8);
 int_bits!(u16, 16);
 int_bits!(u32, 32);

@@ -23,7 +23,7 @@ class HIOB:
 		X: np.ndarray,
 		n_bits: int,
 		output_type: type = np.uint64,
-		scale: float = 1.0,
+		scale: float = None,
 		centers: np.ndarray = None,
 		init_greedy = None,
 		init_ransac = None,
@@ -70,6 +70,130 @@ class HIOB:
 					return lambda s: getattr(s._rust_hiob, specific_name)
 				def make_setter(specific_name):
 					return lambda s, v: s._rust_hiob.__setattr__(specific_name, v)
+				getter = make_getter(name)
+				setter = make_setter(name)
+				# Test if the setter can be called, otherwise remove it
+				try: setter(self, getter(self))
+				except: setter = None
+				attributes[name] = property(fget=getter,fset=setter)
+		# Hacky class extension to add properties. Source:
+		# https://stackoverflow.com/questions/48448074/adding-a-property-to-an-existing-object-instance
+		wrapper_class_name = specific_type+"_Wrapper"
+		wrapper_class = type(wrapper_class_name, (self.__class__,), {**self.__dict__, **attributes})
+		self.__class__ = wrapper_class
+
+class StochasticHIOB:
+	def __init__(self, this_should_only_be_called_from_class_methods=True):
+		if this_should_only_be_called_from_class_methods:
+			print("Please do not call this constructor manually! Use the from_... functions.")
+	def from_h5_file(
+		file: str,
+		dataset: str,
+		sample_size: int,
+		its_per_sample: int,
+		n_bits: int,
+		input_type: type = np.float32,
+		output_type: type = np.uint64,
+		perm_gen_rounds: int = None,
+		scale: float = None,
+		centers: np.ndarray = None,
+		init_greedy: bool = None,
+		init_ransac: bool = None,
+		update_parallel: bool = None,
+		displace_parallel: bool = None,
+	):
+		if n_bits < 1:
+			raise ValueError("The number of bits should be at least 1.")
+		self = StochasticHIOB(False)
+		self._input_type = input_type
+		self._output_type = output_type
+		# Match input type to string
+		input_type_name = _float_type_name(self._input_type)
+		output_type_name = _bits_type_name(self._output_type)
+		# Create specific instance
+		specific_type = "StochasticHIOB_H5_{:}_{:}".format(input_type_name, output_type_name)
+		self._rust_shiob = globals()[specific_type](
+			file,
+			dataset,
+			sample_size,
+			its_per_sample,
+			n_bits,
+			perm_gen_rounds,
+			scale,
+			None if centers is None else centers.astype(self._input_type),
+			init_greedy,
+			init_ransac
+		)
+		self._post_constructor_init(specific_type, update_parallel, displace_parallel)
+		return self
+	def from_ndarray_file(
+		X: np.ndarray,
+		sample_size: int,
+		its_per_sample: int,
+		n_bits: int,
+		output_type: type = np.uint64,
+		perm_gen_rounds: int = None,
+		scale: float = None,
+		centers: np.ndarray = None,
+		init_greedy: bool = None,
+		init_ransac: bool = None,
+		update_parallel: bool = None,
+		displace_parallel: bool = None,
+	):
+		if n_bits < 1:
+			raise ValueError("The number of bits should be at least 1.")
+		self = StochasticHIOB(False)
+		self._input_type = X.dtype
+		self._output_type = output_type
+		# Match input type to string
+		input_type_name = _float_type_name(self._input_type)
+		output_type_name = _bits_type_name(self._output_type)
+		# Create specific instance
+		specific_type = "StochasticHIOB_ND_{:}_{:}".format(input_type_name, output_type_name)
+		self._rust_shiob = globals()[specific_type](
+			X,
+			sample_size,
+			its_per_sample,
+			n_bits,
+			perm_gen_rounds,
+			scale,
+			None if centers is None else centers.astype(self._input_type),
+			init_greedy,
+			init_ransac
+		)
+		self._post_constructor_init(specific_type, update_parallel, displace_parallel)
+		return self
+	def _post_constructor_init(self, specific_type, update_parallel=None, displace_parallel=None):
+		if not update_parallel is None: self._rust_shiob.update_parallel = update_parallel
+		if not displace_parallel is None: self._rust_shiob.displace_parallel = displace_parallel
+		attributes = {}
+		for name in dir(self._rust_shiob):
+			if name.startswith("__"): continue
+			att = getattr(self._rust_shiob, name)
+			if type(att).__name__ == "builtin_function_or_method":
+				# Forward functions but automatically cast inputs to enforce
+				# the usage of numpy arrays and the correct input types.
+				def wrapper_fun_gen(fun):
+					def wrapper_fun(*args, **kwargs):
+						def auto_cast_argument(arg):
+							# Automatically turn every list or tuple into numpy arrays
+							if type(arg) in [tuple, list]: arg = np.array(arg)
+							# Automatically cast every (float) array input to the correct input type
+							if type(arg) == np.ndarray:# and arg.dtype.name.startswith("float"):
+								return arg.astype(self._input_type)
+							return arg
+						return fun(
+							*[auto_cast_argument(arg) for arg in args],
+							**{kw: auto_cast_argument(arg) for kw,arg in kwargs}
+						)
+					return wrapper_fun
+				setattr(self, name, wrapper_fun_gen(att))
+			else:
+				# Forward attributes with implicit getter
+				def make_getter(specific_name):
+					return lambda s: getattr(s._rust_shiob, specific_name)
+				def make_setter(specific_name):
+					return lambda s, v: s._rust_shiob.__setattr__(specific_name, v)
 				getter = make_getter(name)
 				setter = make_setter(name)
 				# Test if the setter can be called, otherwise remove it

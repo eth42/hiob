@@ -2,12 +2,13 @@ use std::{ops::{Mul, Div, Sub}, f64::consts::PI};
 
 
 use num::{Float};
-use ndarray::{Axis, Array2, Array1, ArrayBase, Ix1, ScalarOperand, Data, Ix2, ArrayView2, ArrayView1};
-use rand::prelude::*;
+use hdf5::H5Type;
+use ndarray::{Slice, Axis, Array2, Array1, ArrayBase, Ix1, ScalarOperand, Data, Ix2, ArrayView2, ArrayView1};
+// use rand::prelude::*;
 #[cfg(feature="parallel")]
 use rayon::iter::{ParallelIterator};
 
-use crate::bit_vectors::{BitVector, BitVectorMut};
+use crate::{bit_vectors::{BitVector, BitVectorMut}, random::RandomPermutationGenerator, data::{MatrixDataSource, read_h5_dataset}};
 use crate::measures::{DotProduct, InnerProduct};
 use crate::bits::{Bits};
 use crate::progress::{named_range, named_par_iter, par_iter, MaybeSend, MaybeSync};
@@ -23,7 +24,7 @@ macro_rules! trait_combiner {
 	};
 }
 
-trait_combiner!(HIOBFloat: Float+ScalarOperand+MaybeSend+MaybeSync);
+trait_combiner!(HIOBFloat: H5Type+Float+ScalarOperand+MaybeSend+MaybeSync);
 trait_combiner!(HIOBBits: Bits+Clone+MaybeSend+MaybeSync);
 
 pub struct HIOB<F: HIOBFloat, B: HIOBBits> where Array1<B>: BitVectorMut {
@@ -310,16 +311,44 @@ impl<F: HIOBFloat, B: HIOBBits> HIOB<F, B> where Array1<B>: BitVectorMut {
 		/* Calculate the number of instances of B to accommodate >=n_queries bits */
 		let n_buckets = self.n_bits / B::size() + (if self.n_bits % B::size() > 0 {1} else {0});
 		let mut bins = Array2::from_elem([n_queries, n_buckets], B::zeros());
-		let raw_iter = bins.axis_iter_mut(Axis(0)).enumerate();
+		let raw_iter = bins.axis_iter_mut(Axis(0)).zip(queries.axis_iter(Axis(0)));
 		named_par_iter(raw_iter, "Binarizing queries")
-		.for_each(|(i, mut bins_row)| {
-			self.product.prods(&queries.row(i), &self.centers)
-			.into_iter()
-			.map(|v| v>=F::zero())
-			.enumerate()
-			.for_each(|(j,b)| bins_row.set_bit_unchecked(j, b));
+		.for_each(|(mut bins_row, query)| {
+			bins_row.iter_mut().zip(self.centers.axis_chunks_iter(Axis(0), B::size()))
+			.for_each(|(b, lcenters)| {
+				lcenters.axis_iter(Axis(0)).enumerate()
+				.for_each(|(i_bit, center)| {
+					let bit = self.product.prod(&query, &center) >= F::zero();
+					b.set_bit(i_bit, bit);
+				});
+			});
+			// self.product.prods(&query, &self.centers)
+			// .into_iter()
+			// .map(|v| v>=F::zero())
+			// .enumerate()
+			// .for_each(|(j,b)| bins_row.set_bit_unchecked(j, b));
 		});
 		bins
+	}
+	
+	pub fn binarize_h5(&self, file: &str, dataset: &str, batch_size: usize) -> Result<Array2<B>, hdf5::Error> {
+		let data_source = read_h5_dataset(file, dataset)?;
+		let n_total = <hdf5::Dataset as MatrixDataSource<F>>::n_rows(&data_source);
+		let mut ret = Array2::from_elem(
+			[n_total, self.data_bins.shape()[1]],
+			B::zeros()
+		);
+		let mut handled = 0;
+		while handled < n_total {
+			let lo = handled;
+			let hi = (handled+batch_size).min(n_total);
+			let next_data = data_source.get_rows_slice(lo, hi);
+			let next_bins = self.binarize(&next_data);
+			ret.slice_axis_mut(Axis(0), Slice::from(lo..hi)).axis_iter_mut(Axis(0)).zip(next_bins.axis_iter(Axis(0)))
+			.for_each(|(mut row_to, row_from)| row_to.assign(&row_from));
+			handled += batch_size;
+		}
+		Ok(ret)
 	}
 
 	pub fn get_n_data(&self) -> usize { self.n_data }
@@ -341,6 +370,94 @@ impl<F: HIOBFloat, B: HIOBBits> HIOB<F, B> where Array1<B>: BitVectorMut {
 }
 
 
+pub struct StochasticHIOB<F: HIOBFloat, B: HIOBBits, D: MatrixDataSource<F>> where Array1<B>: BitVectorMut {
+	wrapped_hiob: HIOB<F,B>,
+	data_source: D,
+	perm_gen: RandomPermutationGenerator,
+	sample_size: usize,
+	its_per_sample: usize,
+	current_it: usize
+}
+impl<F: HIOBFloat, B: HIOBBits, D: MatrixDataSource<F>> StochasticHIOB<F,B,D> where Array1<B>: BitVectorMut {
+	pub fn new(
+		data_source: D,
+		sample_size: usize,
+		its_per_sample: usize,
+		n_bits: usize,
+		perm_gen_rounds: Option<usize>,
+		scale: Option<F>,
+		centers: Option<Array2<F>>,
+		init_greedy: Option<bool>,
+		init_ransac: Option<bool>
+	) -> Self {
+		let scale = scale.unwrap_or(F::one());
+		let mut perm_gen = RandomPermutationGenerator::new(data_source.n_rows(), perm_gen_rounds.unwrap_or(4));
+		let initial_data = data_source.get_rows(perm_gen.next_usizes(sample_size));
+		StochasticHIOB {
+			wrapped_hiob: HIOB::new(initial_data, n_bits, Some(scale), centers, init_greedy, init_ransac),
+			data_source,
+			perm_gen: perm_gen,
+			sample_size: sample_size,
+			its_per_sample: its_per_sample,
+			current_it: 0
+		}
+	}
+	
+	pub fn step(&mut self) {
+		if self.current_it >= self.its_per_sample {
+			let new_sample = self.data_source.get_rows(self.perm_gen.next_usizes(self.sample_size));
+			let mut new_wrapped_hiob = HIOB::new(
+				new_sample,
+				self.wrapped_hiob.n_bits,
+				Some(self.wrapped_hiob.scale),
+				Some(self.wrapped_hiob.centers.clone()),
+				None, None
+			);
+			new_wrapped_hiob.set_update_parallel(self.wrapped_hiob.get_update_parallel());
+			new_wrapped_hiob.set_displace_parallel(self.wrapped_hiob.get_displace_parallel());
+			self.wrapped_hiob = new_wrapped_hiob;
+			self.current_it = 0;
+		}
+		self.wrapped_hiob.step();
+		self.current_it += 1;
+	}
+	pub fn run(&mut self, n_steps: usize) {
+		named_range(n_steps, "Improving pivot positions")
+		.for_each(|_| self.step());
+	}
+
+	pub fn binarize<D2: Data<Elem=F>+MaybeSync>(&self, queries: &ArrayBase<D2, Ix2>) -> Array2<B> {
+		self.wrapped_hiob.binarize(queries)
+	}
+
+	pub fn binarize_h5(&self, file: &str, dataset: &str, batch_size: usize) -> Result<Array2<B>, hdf5::Error> {
+		self.wrapped_hiob.binarize_h5(file, dataset, batch_size)
+	}
+	
+	pub fn get_sample_size(&self) -> usize { self.sample_size }
+	pub fn set_sample_size(&mut self, value: usize) { self.sample_size = value; }
+	pub fn get_its_per_sample(&self) -> usize { self.its_per_sample }
+	pub fn set_its_per_sample(&mut self, value: usize) { self.its_per_sample = value; }
+	pub fn get_n_samples(&self) -> usize { self.wrapped_hiob.get_n_data() }
+	pub fn get_n_dims(&self) -> usize { self.wrapped_hiob.get_n_dims() }
+	pub fn get_n_bits(&self) -> usize { self.wrapped_hiob.get_n_bits() }
+	pub fn get_scale(&self) -> F { self.wrapped_hiob.get_scale() }
+	pub fn set_scale(&mut self, scale: F) { self.wrapped_hiob.set_scale(scale) }
+	pub fn get_data<'a>(&'a self) -> ArrayView2<'a, F> { self.wrapped_hiob.get_data() }
+	pub fn get_centers<'a>(&'a self) -> ArrayView2<'a, F> { self.wrapped_hiob.get_centers() }
+	pub fn get_data_bins<'a>(&'a self) -> ArrayView2<'a, B> { self.wrapped_hiob.get_data_bins() }
+	pub fn get_overlap_mat<'a>(&'a self) -> ArrayView2<'a, usize> { self.wrapped_hiob.get_overlap_mat() }
+	pub fn get_sim_mat<'a>(&'a self) -> ArrayView2<'a, f64> { self.wrapped_hiob.get_sim_mat() }
+	pub fn get_sim_sums<'a>(&'a self) -> ArrayView1<'a, f64> { self.wrapped_hiob.get_sim_sums() }
+	pub fn get_update_parallel(&self) -> bool { self.wrapped_hiob.get_update_parallel() }
+	pub fn get_displace_parallel(&self) -> bool { self.wrapped_hiob.get_displace_parallel() }
+	pub fn set_update_parallel(&mut self, b: bool) { self.wrapped_hiob.set_update_parallel(b); }
+	pub fn set_displace_parallel(&mut self, b: bool) { self.wrapped_hiob.set_displace_parallel(b); }
+
+}
+
+
+/* Helper functions */
 /// Chooses pairwise different indices between 0 (inclusive) and max (exclusive).
 /// 
 /// # Arguments
@@ -351,19 +468,20 @@ impl<F: HIOBFloat, B: HIOBBits> HIOB<F, B> where Array1<B>: BitVectorMut {
 /// Result is of type `v: Vec<usize>`
 /// * `v` - A `Vec<usize>` in ascending order
 fn _idx_choice(max: usize, cnt: usize) -> Vec<usize> {
-	let mut rng = rand::thread_rng();
-	let mut ret = Vec::new();
-	ret.reserve_exact(cnt);
-	(0..cnt).for_each(|i| {
-		ret.push((rng.next_u64() as usize) % (max-i));
-		(0..i).for_each(|j| unsafe {
-			if ret.get_unchecked(i) >= ret.get_unchecked(j) {
-				*ret.get_unchecked_mut(i) += 1;
-			}
-		});
-		ret.sort();
-	});
-	ret
+	RandomPermutationGenerator::new(max, 4).next_usizes(cnt)
+	// let mut rng = rand::thread_rng();
+	// let mut ret = Vec::new();
+	// ret.reserve_exact(cnt);
+	// (0..cnt).for_each(|i| {
+	// 	ret.push((rng.next_u64() as usize) % (max-i));
+	// 	(0..i).for_each(|j| unsafe {
+	// 		if ret.get_unchecked(i) >= ret.get_unchecked(j) {
+	// 			*ret.get_unchecked_mut(i) += 1;
+	// 		}
+	// 	});
+	// 	ret.sort();
+	// });
+	// ret
 }
 unsafe fn _max1<T: PartialOrd, D: Data<Elem=T>>(vec: &ArrayBase<D, Ix1>) -> &T {
 	vec.iter()
