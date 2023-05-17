@@ -1,4 +1,5 @@
 from .hiob import *
+from .hiob import RawBinarizationEvaluator
 import numpy as np
 
 def _float_type_name(float_type):
@@ -25,10 +26,12 @@ class HIOB:
 		output_type: type = np.uint64,
 		scale: float = None,
 		centers: np.ndarray = None,
-		init_greedy = None,
-		init_ransac = None,
-		update_parallel = None,
-		displace_parallel = None,
+		init_greedy: bool = None,
+		init_ransac: bool = None,
+		ransac_pairs_per_bit: int = None,
+		ransac_sub_sample: int = None,
+		update_parallel: bool = None,
+		displace_parallel: bool = None,
 	):
 		if n_bits < 1:
 			raise ValueError("The number of bits should be at least 1.")
@@ -39,7 +42,16 @@ class HIOB:
 		output_type_name = _bits_type_name(self._output_type)
 		# Create specific instance
 		specific_type = "HIOB_{:}_{:}".format(input_type_name, output_type_name)
-		self._rust_hiob = globals()[specific_type](X, n_bits, scale, None if centers is None else centers.astype(self._input_type), init_greedy, init_ransac)
+		self._rust_hiob = globals()[specific_type](
+			X,
+			n_bits,
+			scale,
+			None if centers is None else centers.astype(self._input_type),
+			init_greedy,
+			init_ransac,
+			ransac_pairs_per_bit,
+			ransac_sub_sample,
+		)
 		if not update_parallel is None: self._rust_hiob.update_parallel = update_parallel
 		if not displace_parallel is None: self._rust_hiob.displace_parallel = displace_parallel
 		attributes = {}
@@ -99,6 +111,8 @@ class StochasticHIOB:
 		centers: np.ndarray = None,
 		init_greedy: bool = None,
 		init_ransac: bool = None,
+		ransac_pairs_per_bit: int = None,
+		ransac_sub_sample: int = None,
 		update_parallel: bool = None,
 		displace_parallel: bool = None,
 	):
@@ -122,7 +136,9 @@ class StochasticHIOB:
 			scale,
 			None if centers is None else centers.astype(self._input_type),
 			init_greedy,
-			init_ransac
+			init_ransac,
+			ransac_pairs_per_bit,
+			ransac_sub_sample,
 		)
 		self._post_constructor_init(specific_type, update_parallel, displace_parallel)
 		return self
@@ -137,6 +153,8 @@ class StochasticHIOB:
 		centers: np.ndarray = None,
 		init_greedy: bool = None,
 		init_ransac: bool = None,
+		ransac_pairs_per_bit: int = None,
+		ransac_sub_sample: int = None,
 		update_parallel: bool = None,
 		displace_parallel: bool = None,
 	):
@@ -159,7 +177,9 @@ class StochasticHIOB:
 			scale,
 			None if centers is None else centers.astype(self._input_type),
 			init_greedy,
-			init_ransac
+			init_ransac,
+			ransac_pairs_per_bit,
+			ransac_sub_sample,
 		)
 		self._post_constructor_init(specific_type, update_parallel, displace_parallel)
 		return self
@@ -209,7 +229,7 @@ class StochasticHIOB:
 class BinarizationEvaluator:
 	def __init__(self):
 		self._raw = RawBinarizationEvaluator()
-		self._usize = hiob.RawBinarizationEvaluator().brute_force_k_largest_dot_f32(np.ones((1,1),dtype=np.float32),np.ones((1,1),dtype=np.float32),1)[1].dtype
+		self._usize = RawBinarizationEvaluator().brute_force_k_largest_dot_f32(np.ones((1,1),dtype=np.float32),np.ones((1,1),dtype=np.float32),1)[1].dtype
 	def _clean_float_input(self, data, queries):
 		data = np.array(data)
 		ftype = data.dtype

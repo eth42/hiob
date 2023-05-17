@@ -23,7 +23,7 @@ use rand::prelude::*;
 use crate::measures::{InnerProduct,DotProduct};
 use crate::binarizer::{HIOB, HIOBFloat, HIOBBits};
 use crate::bit_vectors::{BitVector};
-use crate::progress::{named_range};
+// use crate::progress::{named_range};
 
 fn _print_hiob_oberlaps<F: HIOBFloat, B: HIOBBits>(hiob: &HIOB<F,B>) {
 	hiob.get_overlap_mat().axis_iter(Axis{0: 0}).for_each(|row| {
@@ -148,7 +148,7 @@ fn _test_random() {
 	.map(|row| prod.prod(&row,&row).sqrt())
 	.collect::<Vec<f32>>();
 	(0..data.shape()[0]).for_each(|i| data.row_mut(i).mapv_inplace(|v| v/norms[i]));
-	let mut hiob: HIOB<f32, u64> = HIOB::new(data.clone(), 100, None, None, None, None);
+	let mut hiob: HIOB<f32, u64> = HIOB::new(data.clone(), 100, None, None, None, None, None, None);
 
 	// _print_hiob_oberlaps(&hiob);
 	_print_hiob_sim_sums(&hiob);
@@ -156,16 +156,16 @@ fn _test_random() {
 	_print_hiob_sim_sums(&hiob);
 	// _print_hiob_oberlaps(&hiob);
 	
-	let hiob_bins = hiob.get_data_bins();
-	let data_bins = hiob.binarize(&data);
-	named_range(data.shape()[0], "Verifying binarization")
-	.map(|i| (data_bins.row(i), hiob_bins.row(i)))
-	.for_each(|(u,v)| {
-		assert_eq!(0, u.hamming_dist(&v));
-		assert_eq!(0, v.hamming_dist(&u));
-		assert_eq!(0, u.hamming_dist_same(&v));
-		assert_eq!(0, v.hamming_dist_same(&u));
-	});
+	// let hiob_bins = hiob.get_data_bins();
+	// let data_bins = hiob.binarize(&data);
+	// named_range(data.shape()[0], "Verifying binarization")
+	// .map(|i| (data_bins.row(i), hiob_bins.row(i)))
+	// .for_each(|(u,v)| {
+	// 	assert_eq!(0, u.hamming_dist(&v));
+	// 	assert_eq!(0, v.hamming_dist(&u));
+	// 	assert_eq!(0, u.hamming_dist_same(&v));
+	// 	assert_eq!(0, v.hamming_dist_same(&u));
+	// });
 }
 
 fn _test_h5_file<F: HIOBFloat+H5Type, B: HIOBBits>(data_file: &str, data_set: &str, n_bits: usize, n_steps: usize) -> HIOB<F, B> {
@@ -178,7 +178,7 @@ fn _test_gen_hiob<F: HIOBFloat, B: HIOBBits>(data: &Array2<F>, n_bits: usize, n_
 	#[cfg(feature = "progressbars")]
 	println!("");
 	_=io::stdout().flush();
-	let mut hiob: HIOB<F, B> = HIOB::new(data.to_owned(), n_bits, None, None, None, None);
+	let mut hiob: HIOB<F, B> = HIOB::new(data.to_owned(), n_bits, None, None, None, None, None, None);
 	println!("done");
 	
 	_print_hiob_sim_sums(&hiob);

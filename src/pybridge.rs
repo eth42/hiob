@@ -31,7 +31,16 @@ macro_rules! hiob_struct_gen {
 			#[pymethods]
 			impl [<HIOB_ $prec_type _ $bin_type>] {
 				#[new]
-				pub fn new(data: PyReadonlyArray2<$prec_type>, n_bits: usize, scale: Option<$prec_type>, centers: Option<PyReadonlyArray2<$prec_type>>, init_greedy: Option<bool>, init_ransac: Option<bool>) -> Self {
+				pub fn new(
+					data: PyReadonlyArray2<$prec_type>,
+					n_bits: usize,
+					scale: Option<$prec_type>,
+					centers: Option<PyReadonlyArray2<$prec_type>>,
+					init_greedy: Option<bool>,
+					init_ransac: Option<bool>,
+					ransac_pairs_per_bit: Option<usize>,
+					ransac_sub_sample: Option<usize>
+				) -> Self {
 					Self{hiob: HIOB::new(
 						data.as_array().into_owned(),
 						n_bits,
@@ -40,7 +49,9 @@ macro_rules! hiob_struct_gen {
 							Some(centers.unwrap().as_array().into_owned())
 						} else { None },
 						init_greedy,
-						init_ransac
+						init_ransac,
+						ransac_pairs_per_bit,
+						ransac_sub_sample
 					)}
 				}
 				pub fn run(&mut self, n_iterations: usize) {
@@ -85,10 +96,10 @@ macro_rules! hiob_struct_gen {
 				pub fn get_centers<'py>(&self, py: Python<'py>) -> &'py PyArray2<$prec_type> {
 					self.hiob.get_centers().to_pyarray(py)
 				}
-				#[getter]
-				pub fn get_data_bins<'py>(&self, py: Python<'py>) -> &'py PyArray2<$bin_type> {
-					self.hiob.get_data_bins().to_pyarray(py)
-				}
+				// #[getter]
+				// pub fn get_data_bins<'py>(&self, py: Python<'py>) -> &'py PyArray2<$bin_type> {
+				// 	self.hiob.get_data_bins().to_pyarray(py)
+				// }
 				#[getter]
 				pub fn get_overlap_mat<'py>(&self, py: Python<'py>) -> &'py PyArray2<usize> {
 					self.hiob.get_overlap_mat().to_pyarray(py)
@@ -165,7 +176,9 @@ macro_rules! stochastic_hiob_struct_gen {
 					scale: Option<$prec_type>,
 					centers: Option<PyReadonlyArray2<$prec_type>>,
 					init_greedy: Option<bool>,
-					init_ransac: Option<bool>
+					init_ransac: Option<bool>,
+					ransac_pairs_per_bit: Option<usize>,
+					ransac_sub_sample: Option<usize>
 				) -> PyResult<Self> {
 					let data_source_result = read_h5_dataset(file.as_str(), dataset.as_str());
 					if data_source_result.is_ok() {
@@ -180,7 +193,9 @@ macro_rules! stochastic_hiob_struct_gen {
 								Some(centers.unwrap().as_array().into_owned())
 							} else { None },
 							init_greedy,
-							init_ransac
+							init_ransac,
+							ransac_pairs_per_bit,
+							ransac_sub_sample
 						)})
 					} else {
 						Err(PyValueError::new_err(data_source_result.unwrap_err().to_string()))
@@ -209,7 +224,9 @@ macro_rules! stochastic_hiob_struct_gen {
 					scale: Option<$prec_type>,
 					centers: Option<PyReadonlyArray2<$prec_type>>,
 					init_greedy: Option<bool>,
-					init_ransac: Option<bool>
+					init_ransac: Option<bool>,
+					ransac_pairs_per_bit: Option<usize>,
+					ransac_sub_sample: Option<usize>
 				) -> PyResult<Self> {
 					Ok(Self{shiob: StochasticHIOB::new(
 						data.as_array().into_owned(),
@@ -222,7 +239,9 @@ macro_rules! stochastic_hiob_struct_gen {
 							Some(centers.unwrap().as_array().into_owned())
 						} else { None },
 						init_greedy,
-						init_ransac
+						init_ransac,
+						ransac_pairs_per_bit,
+						ransac_sub_sample
 					)})
 				}
 			}
@@ -291,10 +310,10 @@ macro_rules! stochastic_hiob_struct_gen {
 				pub fn get_centers<'py>(&self, py: Python<'py>) -> &'py PyArray2<$prec_type> {
 					self.shiob.get_centers().to_pyarray(py)
 				}
-				#[getter]
-				pub fn get_data_bins<'py>(&self, py: Python<'py>) -> &'py PyArray2<$bin_type> {
-					self.shiob.get_data_bins().to_pyarray(py)
-				}
+				// #[getter]
+				// pub fn get_data_bins<'py>(&self, py: Python<'py>) -> &'py PyArray2<$bin_type> {
+				// 	self.shiob.get_data_bins().to_pyarray(py)
+				// }
 				#[getter]
 				pub fn get_overlap_mat<'py>(&self, py: Python<'py>) -> &'py PyArray2<usize> {
 					self.shiob.get_overlap_mat().to_pyarray(py)

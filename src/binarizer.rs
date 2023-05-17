@@ -34,7 +34,9 @@ pub struct HIOB<F: HIOBFloat, B: HIOBBits> where Array1<B>: BitVectorMut {
 	scale: F,
 	data: Array2<F>,
 	centers: Array2<F>,
-	data_bins: Array2<B>,
+	data_bin_length: usize,
+	// center_bin_length: usize,
+	// data_bins: Array2<B>,
 	data_bins_t: Array2<B>,
 	product: DotProduct<F>,
 	overlap_mat: Array2<usize>,
@@ -42,15 +44,26 @@ pub struct HIOB<F: HIOBFloat, B: HIOBBits> where Array1<B>: BitVectorMut {
 	sim_sums: Array1<f64>,
 	update_parallel: bool,
 	displace_parallel: bool,
+	ransac_pairs_per_bit: usize,
+	ransac_sub_sample: usize
 }
 impl<F: HIOBFloat, B: HIOBBits> HIOB<F, B> where Array1<B>: BitVectorMut {
-	pub fn new(data_in: Array2<F>, n_bits: usize, scale: Option<F>, centers: Option<Array2<F>>, init_greedy: Option<bool>, init_ransac: Option<bool>) -> HIOB<F, B> {
+	pub fn new(
+		data_in: Array2<F>,
+		n_bits: usize,
+		scale: Option<F>,
+		centers: Option<Array2<F>>,
+		init_greedy: Option<bool>,
+		init_ransac: Option<bool>,
+		ransac_pairs_per_bit: Option<usize>,
+		ransac_sub_sample: Option<usize>
+	) -> HIOB<F, B> {
 		let n = data_in.shape()[0];
 		let d = data_in.shape()[1];
 		/* Calculate the number of instances of B to accommodate >=n_bits bits */
-		let n_buckets = n_bits / B::size() + (if n_bits % B::size() > 0 {1} else {0});
+		let data_bin_length = n_bits / B::size() + (if n_bits % B::size() > 0 {1} else {0});
 		/* Calculate the number of instances of B to accommodate >=n bits */
-		let n_buckets_t = n / B::size() + (if n % B::size() > 0 {1} else {0});
+		let center_bin_length = n / B::size() + (if n % B::size() > 0 {1} else {0});
 		let centers = if centers.is_some() {
 			centers.unwrap()
 		} else {
@@ -73,14 +86,18 @@ impl<F: HIOBFloat, B: HIOBBits> HIOB<F, B> where Array1<B>: BitVectorMut {
 			scale: if scale.is_some() { scale.unwrap() } else { F::one() },
 			data: data_in,
 			centers: centers,
-			data_bins: Array2::from_elem([n, n_buckets], B::zeros()),
-			data_bins_t: Array2::from_elem([n_bits, n_buckets_t], B::zeros()),
+			data_bin_length: data_bin_length,
+			// center_bin_length: center_bin_length,
+			// data_bins: Array2::from_elem([n, data_bin_length], B::zeros()),
+			data_bins_t: Array2::from_elem([n_bits, center_bin_length], B::zeros()),
 			product: DotProduct::new(),
 			overlap_mat: Array2::from_elem([n_bits, n_bits], n),
 			sim_mat: Array2::from_elem([n_bits, n_bits], 0.0),
 			sim_sums: Array1::from_elem(n_bits, 0.0),
 			update_parallel: false,
 			displace_parallel: false,
+			ransac_pairs_per_bit: ransac_pairs_per_bit.unwrap_or(200),
+			ransac_sub_sample: ransac_sub_sample.unwrap_or(2000),
 		};
 		/* Initialize the instance by computing all entries in the dyn prog matrices */
 		if init_greedy.is_some() && init_greedy.unwrap() {
@@ -107,11 +124,13 @@ impl<F: HIOBFloat, B: HIOBBits> HIOB<F, B> where Array1<B>: BitVectorMut {
 			let mut best_hamming = usize::MAX;
 			for _ in 0..ATTEMPTS {
 				p1 = rand::random::<usize>() % self.n_data;
-				let row1 = self.data_bins.row(p1);
+				let row1 = self.binarize_single(&self.data.row(p1));
+				// let row1 = self.data_bins.row(p1);
 				let iter = par_iter(0..self.n_data)
 				.filter(|p2| p1 != *p2)
 				.map(|p2| {
-					let row2 = self.data_bins.row(p2);
+					let row2 = self.binarize_single(&self.data.row(p2));
+					// let row2 = self.data_bins.row(p2);
 					let hamming = row1.hamming_dist_same(&row2);
 					(p2, hamming)
 				});
@@ -141,16 +160,14 @@ impl<F: HIOBFloat, B: HIOBBits> HIOB<F, B> where Array1<B>: BitVectorMut {
 		.for_each(|i| self.update_overlaps(i));
 	}
 	fn init_ransac(&mut self) {
-		const N_PAIRS: usize = 200;
-		const N_SAMPLES: usize = 2000;
-		let samples = _idx_choice(self.n_data, N_SAMPLES);
-		let n_buckets = N_SAMPLES / B::size() + (if N_SAMPLES % B::size() > 0 {1} else {0});
+		let samples = _idx_choice(self.n_data, self.ransac_sub_sample);
+		let n_buckets = self.ransac_sub_sample / B::size() + (if self.ransac_sub_sample % B::size() > 0 {1} else {0});
 		let mut c_bit_vecs = Array2::from_elem([self.n_bits, n_buckets], B::zeros());
 		(0..self.n_bits).for_each(|i_center| {
 			let mut best_c: Array1<F> = Array1::from_elem(self.n_dims, F::zero());
 			let mut best_bit_vec: Array1<B> = Array1::from_elem(n_buckets, B::zeros());
 			let mut worst_sim: f64 = f64::MAX;
-			for _ in 0..N_PAIRS {
+			for _ in 0..self.ransac_pairs_per_bit {
 				let p1 = rand::random::<usize>() % self.n_data;
 				let mut p2 = rand::random::<usize>() % self.n_data;
 				while p1 == p2 { p2 = rand::random::<usize>() % self.n_data; }
@@ -162,7 +179,7 @@ impl<F: HIOBFloat, B: HIOBBits> HIOB<F, B> where Array1<B>: BitVectorMut {
 				.for_each(|(i_item, target)|
 					(0..B::size()).for_each(|i_bit| {
 						let i_pnt = i_item*B::size()+i_bit;
-						if i_pnt < N_SAMPLES {
+						if i_pnt < self.ransac_sub_sample {
 							let prod = self.product.prod(
 								&c,
 								&self.data.row(unsafe { *samples.get_unchecked(i_pnt) })
@@ -179,8 +196,8 @@ impl<F: HIOBFloat, B: HIOBBits> HIOB<F, B> where Array1<B>: BitVectorMut {
 				}
 				let local_worst_sim = (0..i_center).map(|j_center| {
 					let dist = c_bit_vecs.row(j_center).hamming_dist_same(&bit_vec.view());
-					let overlap = N_SAMPLES - dist;
-					let sim = ((overlap as f64) / (N_SAMPLES as f64) - 0.5).abs();
+					let overlap = self.ransac_sub_sample - dist;
+					let sim = ((overlap as f64) / (self.ransac_sub_sample as f64) - 0.5).abs();
 					sim
 				})
 				.reduce(|a,b| if a>b {a} else {b})
@@ -205,28 +222,19 @@ impl<F: HIOBFloat, B: HIOBBits> HIOB<F, B> where Array1<B>: BitVectorMut {
 		let c = self.centers.row(i_center);
 		let mut cb = self.data_bins_t.row_mut(i_center);
 		par_iter(
-			(0..cb.len())
+			cb.iter_mut()
 			.zip(self.data.axis_chunks_iter(Axis(0), B::size()))
-			.zip(self.data_bins.axis_chunks_iter_mut(Axis(0), B::size()))
-			.map(|((i_bits, points), points_bin)|
-				(i_bits, points, points_bin)
-			)
 		)
-		.map(|(i_bits, points, mut points_bin)| {
+		.for_each(|(target, points)| {
 			let mut bits = B::zeros();
-			points.axis_iter(Axis(0)).zip(points_bin.axis_iter_mut(Axis(0)))
+			points.axis_iter(Axis(0))
 			.enumerate()
-			.map(|(a,(b,c))| (a,b,c))
-			.for_each(|(i_bit, point, mut point_bin)| {
+			.for_each(|(i_bit, point)| {
 				let bit = self.product.prod(&c, &point) >= F::zero();
-				point_bin.set_bit_unchecked(i_center, bit);
 				bits.set_bit_unchecked(i_bit, bit);
 			});
-			(i_bits, bits)
-		})
-		.collect::<Vec<(usize, B)>>()
-		.into_iter()
-		.for_each(|(i_bits, bits)| unsafe { *cb.uget_mut(i_bits) = bits });
+			*target = bits;
+		});
 	}
 	fn update_overlaps(&mut self, i_center: usize) {
 		unsafe { *self.sim_sums.uget_mut(i_center) = 0.0; }
@@ -306,11 +314,21 @@ impl<F: HIOBFloat, B: HIOBBits> HIOB<F, B> where Array1<B>: BitVectorMut {
 		.for_each(|_| self.step());
 	}
 
+	pub fn binarize_single<D: Data<Elem=F>+MaybeSync>(&self, query: &ArrayBase<D, Ix1>) -> Array1<B> {
+		let mut bins = Array1::from_elem(self.data_bin_length, B::zeros());
+		bins.iter_mut().zip(self.centers.axis_chunks_iter(Axis(0), B::size()))
+		.for_each(|(b, lcenters)| {
+			lcenters.axis_iter(Axis(0)).enumerate()
+			.for_each(|(i_bit, center)| {
+				let bit = self.product.prod(&query, &center) >= F::zero();
+				b.set_bit(i_bit, bit);
+			});
+		});
+		bins
+	}
 	pub fn binarize<D: Data<Elem=F>+MaybeSync>(&self, queries: &ArrayBase<D, Ix2>) -> Array2<B> {
 		let n_queries = queries.shape()[0];
-		/* Calculate the number of instances of B to accommodate >=n_queries bits */
-		let n_buckets = self.n_bits / B::size() + (if self.n_bits % B::size() > 0 {1} else {0});
-		let mut bins = Array2::from_elem([n_queries, n_buckets], B::zeros());
+		let mut bins = Array2::from_elem([n_queries, self.data_bin_length], B::zeros());
 		let raw_iter = bins.axis_iter_mut(Axis(0)).zip(queries.axis_iter(Axis(0)));
 		named_par_iter(raw_iter, "Binarizing queries")
 		.for_each(|(mut bins_row, query)| {
@@ -335,7 +353,7 @@ impl<F: HIOBFloat, B: HIOBBits> HIOB<F, B> where Array1<B>: BitVectorMut {
 		let data_source = read_h5_dataset(file, dataset)?;
 		let n_total = <hdf5::Dataset as MatrixDataSource<F>>::n_rows(&data_source);
 		let mut ret = Array2::from_elem(
-			[n_total, self.data_bins.shape()[1]],
+			[n_total, self.data_bin_length],
 			B::zeros()
 		);
 		let mut handled = 0;
@@ -358,7 +376,7 @@ impl<F: HIOBFloat, B: HIOBBits> HIOB<F, B> where Array1<B>: BitVectorMut {
 	pub fn set_scale(&mut self, scale: F) { self.scale = scale }
 	pub fn get_data<'a>(&'a self) -> ArrayView2<'a, F> { self.data.view() }
 	pub fn get_centers<'a>(&'a self) -> ArrayView2<'a, F> { self.centers.view() }
-	pub fn get_data_bins<'a>(&'a self) -> ArrayView2<'a, B> { self.data_bins.view() }
+	// pub fn get_data_bins<'a>(&'a self) -> ArrayView2<'a, B> { self.data_bins.view() }
 	pub fn get_overlap_mat<'a>(&'a self) -> ArrayView2<'a, usize> { self.overlap_mat.view() }
 	pub fn get_sim_mat<'a>(&'a self) -> ArrayView2<'a, f64> { self.sim_mat.view() }
 	pub fn get_sim_sums<'a>(&'a self) -> ArrayView1<'a, f64> { self.sim_sums.view() }
@@ -388,13 +406,24 @@ impl<F: HIOBFloat, B: HIOBBits, D: MatrixDataSource<F>> StochasticHIOB<F,B,D> wh
 		scale: Option<F>,
 		centers: Option<Array2<F>>,
 		init_greedy: Option<bool>,
-		init_ransac: Option<bool>
+		init_ransac: Option<bool>,
+		ransac_pairs_per_bit: Option<usize>,
+		ransac_sub_sample: Option<usize>
 	) -> Self {
 		let scale = scale.unwrap_or(F::one());
 		let mut perm_gen = RandomPermutationGenerator::new(data_source.n_rows(), perm_gen_rounds.unwrap_or(4));
 		let initial_data = data_source.get_rows(perm_gen.next_usizes(sample_size));
 		StochasticHIOB {
-			wrapped_hiob: HIOB::new(initial_data, n_bits, Some(scale), centers, init_greedy, init_ransac),
+			wrapped_hiob: HIOB::new(
+				initial_data,
+				n_bits,
+				Some(scale),
+				centers,
+				init_greedy,
+				init_ransac,
+				ransac_pairs_per_bit,
+				ransac_sub_sample
+			),
 			data_source,
 			perm_gen: perm_gen,
 			sample_size: sample_size,
@@ -411,7 +440,7 @@ impl<F: HIOBFloat, B: HIOBBits, D: MatrixDataSource<F>> StochasticHIOB<F,B,D> wh
 				self.wrapped_hiob.n_bits,
 				Some(self.wrapped_hiob.scale),
 				Some(self.wrapped_hiob.centers.clone()),
-				None, None
+				None, None, None, None
 			);
 			new_wrapped_hiob.set_update_parallel(self.wrapped_hiob.get_update_parallel());
 			new_wrapped_hiob.set_displace_parallel(self.wrapped_hiob.get_displace_parallel());
@@ -445,7 +474,7 @@ impl<F: HIOBFloat, B: HIOBBits, D: MatrixDataSource<F>> StochasticHIOB<F,B,D> wh
 	pub fn set_scale(&mut self, scale: F) { self.wrapped_hiob.set_scale(scale) }
 	pub fn get_data<'a>(&'a self) -> ArrayView2<'a, F> { self.wrapped_hiob.get_data() }
 	pub fn get_centers<'a>(&'a self) -> ArrayView2<'a, F> { self.wrapped_hiob.get_centers() }
-	pub fn get_data_bins<'a>(&'a self) -> ArrayView2<'a, B> { self.wrapped_hiob.get_data_bins() }
+	// pub fn get_data_bins<'a>(&'a self) -> ArrayView2<'a, B> { self.wrapped_hiob.get_data_bins() }
 	pub fn get_overlap_mat<'a>(&'a self) -> ArrayView2<'a, usize> { self.wrapped_hiob.get_overlap_mat() }
 	pub fn get_sim_mat<'a>(&'a self) -> ArrayView2<'a, f64> { self.wrapped_hiob.get_sim_mat() }
 	pub fn get_sim_sums<'a>(&'a self) -> ArrayView1<'a, f64> { self.wrapped_hiob.get_sim_sums() }
