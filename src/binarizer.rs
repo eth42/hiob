@@ -2,13 +2,18 @@ use std::{ops::{Mul, Div, Sub}, f64::consts::PI};
 
 
 use num::{Float};
+#[cfg(feature="rust-hdf5")]
 use hdf5::H5Type;
 use ndarray::{Slice, Axis, Array2, Array1, ArrayBase, Ix1, ScalarOperand, Data, Ix2, ArrayView2, ArrayView1};
 // use rand::prelude::*;
 #[cfg(feature="parallel")]
 use rayon::iter::{ParallelIterator};
 
-use crate::{bit_vectors::{BitVector, BitVectorMut}, random::RandomPermutationGenerator, data::{MatrixDataSource, read_h5_dataset}};
+use crate::{
+	bit_vectors::{BitVector, BitVectorMut},
+	random::RandomPermutationGenerator,
+	data::{MatrixDataSource, AsyncMatrixDataSource, CachingH5PyReader, CachingNumpyEquivalent}
+};
 use crate::measures::{DotProduct, InnerProduct};
 use crate::bits::{Bits};
 use crate::progress::{named_range, named_par_iter, par_iter, MaybeSend, MaybeSync};
@@ -24,7 +29,10 @@ macro_rules! trait_combiner {
 	};
 }
 
-trait_combiner!(HIOBFloat: H5Type+Float+ScalarOperand+MaybeSend+MaybeSync);
+#[cfg(feature="rust-hdf5")]
+trait_combiner!(HIOBFloat: CachingNumpyEquivalent+H5Type+Float+ScalarOperand+MaybeSend+MaybeSync);
+#[cfg(not(feature="rust-hdf5"))]
+trait_combiner!(HIOBFloat: CachingNumpyEquivalent+Float+ScalarOperand+MaybeSend+MaybeSync);
 trait_combiner!(HIOBBits: Bits+Clone+MaybeSend+MaybeSync);
 
 pub struct HIOB<F: HIOBFloat, B: HIOBBits> where Array1<B>: BitVectorMut {
@@ -349,23 +357,34 @@ impl<F: HIOBFloat, B: HIOBBits> HIOB<F, B> where Array1<B>: BitVectorMut {
 		bins
 	}
 	
-	pub fn binarize_h5(&self, file: &str, dataset: &str, batch_size: usize) -> Result<Array2<B>, hdf5::Error> {
-		let data_source = read_h5_dataset(file, dataset)?;
-		let n_total = <hdf5::Dataset as MatrixDataSource<F>>::n_rows(&data_source);
+	pub fn binarize_h5(&self, file: &str, dataset: &str, batch_size: usize) -> Result<Array2<B>, std::fmt::Error> {
+		// let data_source = read_h5_dataset(file, dataset)?;
+		let mut cached_source = CachingH5PyReader::new(file.to_string(), dataset.to_string());
+		// let mut cached_source = CachingH5Reader::new(file.to_string(), dataset.to_string());
+		let n_total = cached_source.n_rows();
 		let mut ret = Array2::from_elem(
 			[n_total, self.data_bin_length],
 			B::zeros()
 		);
-		let mut handled = 0;
-		while handled < n_total {
-			let lo = handled;
-			let hi = (handled+batch_size).min(n_total);
-			let next_data = data_source.get_rows_slice(lo, hi);
+		let mut lo = 0;
+		let mut hi = batch_size.min(n_total);
+		let mut next_data = cached_source.get_rows_slice(lo, hi);
+		let mut cached = hi;
+		while cached < n_total {
+			let next_lo = cached;
+			let next_hi = (cached+batch_size).min(n_total);
+			assert!(cached_source.prepare_rows_slice(next_lo, next_hi).is_ok());
+			cached += next_hi-next_lo;
 			let next_bins = self.binarize(&next_data);
 			ret.slice_axis_mut(Axis(0), Slice::from(lo..hi)).axis_iter_mut(Axis(0)).zip(next_bins.axis_iter(Axis(0)))
 			.for_each(|(mut row_to, row_from)| row_to.assign(&row_from));
-			handled += batch_size;
+			next_data = cached_source.get_cached().unwrap();
+			lo = next_lo;
+			hi = next_hi;
 		}
+		let next_bins = self.binarize(&next_data);
+		ret.slice_axis_mut(Axis(0), Slice::from(lo..hi)).axis_iter_mut(Axis(0)).zip(next_bins.axis_iter(Axis(0)))
+		.for_each(|(mut row_to, row_from)| row_to.assign(&row_from));
 		Ok(ret)
 	}
 
@@ -459,7 +478,7 @@ impl<F: HIOBFloat, B: HIOBBits, D: MatrixDataSource<F>> StochasticHIOB<F,B,D> wh
 		self.wrapped_hiob.binarize(queries)
 	}
 
-	pub fn binarize_h5(&self, file: &str, dataset: &str, batch_size: usize) -> Result<Array2<B>, hdf5::Error> {
+	pub fn binarize_h5(&self, file: &str, dataset: &str, batch_size: usize) -> Result<Array2<B>, std::fmt::Error> {
 		self.wrapped_hiob.binarize_h5(file, dataset, batch_size)
 	}
 	
@@ -610,3 +629,18 @@ fn min_max_tests() {
 	assert!(true_min == pred_min, "True min: {}, Via _min1: {}", true_min, pred_min);
 }
 
+
+// #[test]
+// fn benchmark_access_dataset_time() {
+// 	use std::time::{SystemTime, UNIX_EPOCH};
+// 	let file = "/home/thordsen/tmp/sisap23challenge/data/laion2B-en-clip768v2-n=100K.h5";
+// 	let current_millis = || SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
+// 	let h: HIOB<f32, u64> = HIOB::new(Array2::zeros((1000, 768)), 1024, None, None, None, None, None, None);
+// 	let n_its = 1;
+// 	let start = current_millis();
+// 	(0..n_its).for_each(|_| {
+// 		_ = h.binarize_h5(file, "emb", 1000);
+// 	});
+// 	let end = current_millis();
+// 	println!("{:?}", (end-start)/n_its);
+// }

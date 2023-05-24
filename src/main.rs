@@ -12,18 +12,31 @@ mod data;
 
 use std::io::{self, Write};
 
-use bits::Bits;
-use eval::BinarizationEvaluator;
-use hdf5::H5Type;
-use ndarray::{Axis, Array, Array2};
-use ndarray_rand::RandomExt;
-use ndarray_rand::rand_distr::StandardNormal;
-use rand::prelude::*;
+#[cfg(feature="rust-hdf5")]
+use {
+	bits::Bits,
+	eval::BinarizationEvaluator,
+	hdf5::H5Type,
+	ndarray::{Axis, Array, Array2},
+	ndarray_rand::RandomExt,
+	ndarray_rand::rand_distr::StandardNormal,
+	rand::prelude::*,
 
-use crate::measures::{InnerProduct,DotProduct};
-use crate::binarizer::{HIOB, HIOBFloat, HIOBBits};
-use crate::bit_vectors::{BitVector};
-// use crate::progress::{named_range};
+	crate::measures::{InnerProduct,DotProduct},
+	crate::binarizer::{HIOB, HIOBFloat, HIOBBits},
+	crate::bit_vectors::{BitVector},
+};
+#[cfg(not(feature="rust-hdf5"))]
+use {
+	ndarray::{Axis, Array, Array2},
+	ndarray_rand::RandomExt,
+	ndarray_rand::rand_distr::StandardNormal,
+	rand::prelude::*,
+
+	crate::measures::{InnerProduct,DotProduct},
+	crate::binarizer::{HIOB, HIOBFloat, HIOBBits},
+	crate::bit_vectors::{BitVector},
+};
 
 fn _print_hiob_oberlaps<F: HIOBFloat, B: HIOBBits>(hiob: &HIOB<F,B>) {
 	hiob.get_overlap_mat().axis_iter(Axis{0: 0}).for_each(|row| {
@@ -38,6 +51,7 @@ fn _print_hiob_sim_sums<F: HIOBFloat, B: HIOBBits>(hiob: &HIOB<F,B>) {
 	println!("");
 }
 
+#[cfg(feature="rust-hdf5")]
 fn _read_h5_file<F: H5Type>(file: &str, dataset_name: &str) -> Result<Array2<F>, hdf5::Error> {
 	print!("Opening file... "); _=io::stdout().flush();
 	let file_handle = hdf5::File::open(file)?;
@@ -50,12 +64,14 @@ fn _read_h5_file<F: H5Type>(file: &str, dataset_name: &str) -> Result<Array2<F>,
 	println!("done");
 	Ok(data)
 }
+#[cfg(feature="rust-hdf5")]
 fn _write_h5_file<F: H5Type>(file: &str, dataset_name: &str, arr: &Array2<F>) -> Result<(), hdf5::Error> {
 	let file_handle = hdf5::File::create(file)?;
 	file_handle.new_dataset_builder().with_data(arr).create(dataset_name)?;
 	Ok(())
 }
 
+#[cfg(feature="rust-hdf5")]
 #[allow(dead_code)]
 fn load_laion_data<F: H5Type>(size: &str) -> Result<Array2<F>, hdf5::Error> {
 	_read_h5_file(
@@ -63,6 +79,7 @@ fn load_laion_data<F: H5Type>(size: &str) -> Result<Array2<F>, hdf5::Error> {
 		"emb"
 	)
 }
+#[cfg(feature="rust-hdf5")]
 #[allow(dead_code)]
 fn load_laion_neighbors(size: &str) -> Result<Array2<usize>, hdf5::Error> {
 	let arr = _read_h5_file(
@@ -71,6 +88,7 @@ fn load_laion_neighbors(size: &str) -> Result<Array2<usize>, hdf5::Error> {
 	)?;
 	Ok(arr - 1)
 }
+#[cfg(feature="rust-hdf5")]
 #[allow(dead_code)]
 fn load_laion_queries<F: H5Type>() -> Result<Array2<F>, hdf5::Error> {
 	_read_h5_file(
@@ -78,6 +96,7 @@ fn load_laion_queries<F: H5Type>() -> Result<Array2<F>, hdf5::Error> {
 		"emb"
 	)
 }
+#[cfg(feature="rust-hdf5")]
 #[allow(dead_code)]
 fn safe_laion_data_bins<B: Bits+H5Type>(data_bin: &Array2<B>, size: &str) -> Result<(), hdf5::Error> {
 	_write_h5_file(
@@ -86,6 +105,7 @@ fn safe_laion_data_bins<B: Bits+H5Type>(data_bin: &Array2<B>, size: &str) -> Res
 		data_bin
 	)
 }
+#[cfg(feature="rust-hdf5")]
 #[allow(dead_code)]
 fn safe_laion_queries_bins<B: Bits+H5Type>(queries_bin: &Array2<B>, size: &str) -> Result<(), hdf5::Error> {
 	_write_h5_file(
@@ -95,6 +115,14 @@ fn safe_laion_queries_bins<B: Bits+H5Type>(queries_bin: &Array2<B>, size: &str) 
 	)
 }
 
+
+#[cfg(not(feature="rust-hdf5"))]
+#[allow(unused)]
+fn main() {
+	println!("This library is not intended for standalone use.")
+}
+
+#[cfg(feature="rust-hdf5")]
 #[allow(dead_code)]
 fn main() {
 	if false { _test_bit_vectors(); }
@@ -168,6 +196,7 @@ fn _test_random() {
 	// });
 }
 
+#[cfg(feature="rust-hdf5")]
 fn _test_h5_file<F: HIOBFloat+H5Type, B: HIOBBits>(data_file: &str, data_set: &str, n_bits: usize, n_steps: usize) -> HIOB<F, B> {
 	let data = _read_h5_file(data_file, data_set).unwrap();
 	_test_gen_hiob(&data, n_bits, n_steps)

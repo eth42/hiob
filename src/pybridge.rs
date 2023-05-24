@@ -5,10 +5,10 @@ use ndarray::{Array2,OwnedRepr};
 #[cfg(feature="parallel")]
 use {rayon::ThreadPoolBuilder, pyo3::exceptions::PyValueError};
 #[cfg(not(feature="parallel"))]
-use pyo3::exceptions::PyWarning;
+use pyo3::exceptions::{PyValueError, PyWarning};
 	
 use crate::binarizer::{HIOB,StochasticHIOB};
-use crate::data::{read_h5_dataset};
+use crate::data::{H5PyDataset};
 use crate::eval::BinarizationEvaluator;
 use crate::bit_vectors::BitVector;
 use crate::index::THX;
@@ -161,7 +161,7 @@ macro_rules! stochastic_hiob_struct_gen {
 			#[allow(non_camel_case_types)]
 			#[pyclass]
 			pub struct [<StochasticHIOB_H5_ $prec_type _ $bin_type>] {
-				shiob: StochasticHIOB<$prec_type,$bin_type,hdf5::Dataset>
+				shiob: StochasticHIOB<$prec_type,$bin_type,H5PyDataset<$prec_type>>
 			}
 			#[pymethods]
 			impl [<StochasticHIOB_H5_ $prec_type _ $bin_type>] {
@@ -180,26 +180,22 @@ macro_rules! stochastic_hiob_struct_gen {
 					ransac_pairs_per_bit: Option<usize>,
 					ransac_sub_sample: Option<usize>
 				) -> PyResult<Self> {
-					let data_source_result = read_h5_dataset(file.as_str(), dataset.as_str());
-					if data_source_result.is_ok() {
-						Ok(Self{shiob: StochasticHIOB::new(
-							data_source_result.unwrap(),
-							sample_size,
-							its_per_sample,
-							n_bits,
-							perm_gen_rounds,
-							scale,
-							if centers.is_some() {
-								Some(centers.unwrap().as_array().into_owned())
-							} else { None },
-							init_greedy,
-							init_ransac,
-							ransac_pairs_per_bit,
-							ransac_sub_sample
-						)})
-					} else {
-						Err(PyValueError::new_err(data_source_result.unwrap_err().to_string()))
-					}
+					let data_source = H5PyDataset::<$prec_type>::new(file.as_str(), dataset.as_str());
+					Ok(Self{shiob: StochasticHIOB::new(
+						data_source,
+						sample_size,
+						its_per_sample,
+						n_bits,
+						perm_gen_rounds,
+						scale,
+						if centers.is_some() {
+							Some(centers.unwrap().as_array().into_owned())
+						} else { None },
+						init_greedy,
+						init_ransac,
+						ransac_pairs_per_bit,
+						ransac_sub_sample
+					)})
 				}
 			}
 			stochastic_hiob_struct_gen!(funs H5, $prec_type, $bin_type);
