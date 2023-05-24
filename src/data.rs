@@ -181,7 +181,7 @@ impl<T: NumpyEquivalent> MatrixDataSource<T> for H5PyDataset<T> {
 			)?)?;
 			locals.set_item("idx", i_rows)?;
 			let row_obj = py.eval(
-				format!("data[idx].astype(np.{:})", T::numpy_name()).as_str(),
+				format!("data[np.sort(idx)].astype(np.{:})", T::numpy_name()).as_str(),
 				None,
 				Some(&locals)
 			)?;

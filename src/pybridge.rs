@@ -408,19 +408,53 @@ macro_rules! eval_fun_gen_p {
 				}
 				pub fn [<k_at_n_recall_prec_hamming_neighbors_ $prec_type>](
 					&self,
-					data_bin: PyReadonlyArray2<$prec_type>,
-					queries_bin: PyReadonlyArray2<$prec_type>,
+					data: PyReadonlyArray2<$prec_type>,
+					queries: PyReadonlyArray2<$prec_type>,
 					hamming_neighbors: PyReadonlyArray2<usize>,
 					k: usize
 				) -> PyResult<f64> {
 					Ok(
 						self.bin_eval.k_at_n_recall_prec_hamming_neighbors(
-							&data_bin.as_array(),
-							&queries_bin.as_array(),
+							&data.as_array(),
+							&queries.as_array(),
 							&hamming_neighbors.as_array(),
 							k
 						)
 					)
+				}
+				pub fn [<refine_ $prec_type>]<'py>(
+					&self,
+					py: Python<'py>,
+					data: PyReadonlyArray2<$prec_type>,
+					queries: PyReadonlyArray2<$prec_type>,
+					hamming_neighbors: PyReadonlyArray2<usize>,
+					k: usize
+				) -> (&'py PyArray2<$prec_type>, &'py PyArray2<usize>) {
+					let (dots, idxs) = self.bin_eval.refine(
+						&data.as_array(),
+						&queries.as_array(),
+						&hamming_neighbors.as_array(),
+						k
+					);
+					(dots.to_pyarray(py), idxs.to_pyarray(py))
+				}
+				pub fn [<refine_h5_ $prec_type>]<'py>(
+					&self,
+					py: Python<'py>,
+					data_file: String,
+					data_dataset: String,
+					queries: PyReadonlyArray2<$prec_type>,
+					hamming_neighbors: PyReadonlyArray2<usize>,
+					k: usize
+				) -> (&'py PyArray2<$prec_type>, &'py PyArray2<usize>) {
+					let (dots, idxs) = self.bin_eval.refine_h5(
+						data_file.as_str(),
+						data_dataset.as_str(),
+						&queries.as_array(),
+						&hamming_neighbors.as_array(),
+						k
+					);
+					(dots.to_pyarray(py), idxs.to_pyarray(py))
 				}
 			}
 		}

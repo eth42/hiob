@@ -271,6 +271,22 @@ class BinarizationEvaluator:
 		data_bin, queries_bin, btype_name = self._clean_bin_input(data_bin, queries_bin)
 		fun = getattr(self._raw, "k_at_n_recall_{:}_{:}".format(ftype_name,btype_name))
 		return fun(data, data_bin, queries, queries_bin, k, n)
+	def refine(self, data: np.ndarray, queries: np.ndarray, hamming_ids: np.ndarray, k: int):
+		data, queries, ftype_name = self._clean_float_input(data, queries)
+		fun = getattr(self._raw, "refine_{:}".format(ftype_name))
+		return fun(data, queries, hamming_ids, k)
+	def refine_h5(self, data_file: str, data_dataset: str, queries: np.ndarray, hamming_ids: np.ndarray, k: int):
+		ftype_name = _float_type_name(queries.dtype)
+		fun = getattr(self._raw, "refine_h5_{:}".format(ftype_name))
+		return fun(data_file, data_dataset, queries, hamming_ids, k)
+	def query(self, data, data_bin, queries, queries_bin, k, n):
+		assert k <= n
+		_, candidate_ids = self.brute_force_k_smallest_hamming(data_bin, queries_bin, n)
+		return self.refine(data, queries, candidate_ids, k)
+	def query_h5(self, data_file, data_dataset, data_bin, queries, queries_bin, k, n):
+		assert k <= n
+		_, candidate_ids = self.brute_force_k_smallest_hamming(data_bin, queries_bin, n)
+		return self.refine_h5(data_file, data_dataset, queries, candidate_ids, k)
 
 class THX:
 	def __init__(

@@ -8,7 +8,8 @@ use crate::binarizer::{HIOBFloat, HIOBBits};
 // use crate::bits::{Bits};
 use crate::bit_vectors::{BitVector};
 use crate::bits::Bits;
-use crate::progress::{named_par_iter, MaybeSync};
+use crate::data::{MatrixDataSource, H5PyDataset};
+use crate::progress::{named_par_iter, MaybeSync, par_iter};
 use crate::measures::{DotProduct, InnerProduct};
 use crate::heaps::{MaxHeap, MinHeap, GenericHeap};
 
@@ -173,6 +174,83 @@ impl BinarizationEvaluator {
 		recall_cnt as f64 / (n_queries * k) as f64
 	}
 
+	pub fn abstract_refine<
+		F: HIOBFloat,
+		TD: MatrixDataSource<F>+MaybeSync,
+		TQ: Data<Elem=F>,
+		TI: Data<Elem=usize>,
+	>(
+		&self,
+		data: &TD,
+		queries: &ArrayBase<TQ, Ix2>,
+		hamming_ids: &ArrayBase<TI, Ix2>,
+		k: usize,
+	) -> (Array2<F>, Array2<usize>) {
+		/* Quick sanity check */
+		assert!(k <= hamming_ids.shape()[1]);
+		let n_queries = queries.shape()[0];
+		let prod = DotProduct::<F>::new();
+		let mut dot_prods = Array2::from_elem((n_queries,k), F::zero());
+		let mut neighbor_ids = Array2::zeros((n_queries, k));
+		let raw_iter = queries.axis_iter(Axis(0))
+		.zip(hamming_ids.axis_iter(Axis(0)))
+		.zip(dot_prods.axis_iter_mut(Axis(0)))
+		.zip(neighbor_ids.axis_iter_mut(Axis(0)));
+		par_iter(raw_iter)
+		.map(|(((a,b),c),d)| (a,b,c,d))
+		.for_each(|(query, h_nn_ids, mut d_nn_dists, mut d_nn_ids)| {
+			let candidates = data.get_rows(h_nn_ids.to_vec());
+			let mut heap = MinHeap::<F, usize>::new();
+			heap.reserve(k);
+			candidates.axis_iter(Axis(0))
+			.zip(h_nn_ids.iter())
+			.for_each(|(row, &i_row)| unsafe {
+				let v = prod.prod(&row,&query);
+				if heap.size() < k {
+					heap.push(v, i_row);
+				} else if heap.peek().unwrap_unchecked().0 < v {
+					heap.pop();
+					heap.push(v, i_row);
+				}
+			});
+			heap.into_iter().zip((0..k).rev()).for_each(|((dist, idx), i_nn)| unsafe {
+				*d_nn_dists.uget_mut(i_nn) = dist;
+				*d_nn_ids.uget_mut(i_nn) = idx;
+			})
+		});
+		(dot_prods, neighbor_ids)
+	}
+
+	pub fn refine<
+		F: HIOBFloat,
+		TD: Data<Elem=F>+MaybeSync,
+		TQ: Data<Elem=F>,
+		TI: Data<Elem=usize>,
+	>(
+		&self,
+		data: &ArrayBase<TD, Ix2>,
+		queries: &ArrayBase<TQ, Ix2>,
+		hamming_ids: &ArrayBase<TI, Ix2>,
+		k: usize,
+	) -> (Array2<F>, Array2<usize>) {
+		self.abstract_refine(data, queries, hamming_ids, k)
+	}
+
+	pub fn refine_h5<
+		F: HIOBFloat,
+		TQ: Data<Elem=F>,
+		TI: Data<Elem=usize>,
+	>(
+		&self,
+		data_file: &str,
+		data_dataset: &str,
+		queries: &ArrayBase<TQ, Ix2>,
+		hamming_ids: &ArrayBase<TI, Ix2>,
+		k: usize,
+	) -> (Array2<F>, Array2<usize>) {
+		let data = H5PyDataset::<F>::new(data_file, data_dataset);
+		self.abstract_refine(&data, queries, hamming_ids, k)
+	}
 }
 
 
