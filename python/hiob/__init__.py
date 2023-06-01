@@ -142,7 +142,7 @@ class StochasticHIOB:
 		)
 		self._post_constructor_init(specific_type, update_parallel, displace_parallel)
 		return self
-	def from_ndarray_file(
+	def from_ndarray(
 		X: np.ndarray,
 		sample_size: int,
 		its_per_sample: int,
@@ -271,22 +271,58 @@ class BinarizationEvaluator:
 		data_bin, queries_bin, btype_name = self._clean_bin_input(data_bin, queries_bin)
 		fun = getattr(self._raw, "k_at_n_recall_{:}_{:}".format(ftype_name,btype_name))
 		return fun(data, data_bin, queries, queries_bin, k, n)
-	def refine(self, data: np.ndarray, queries: np.ndarray, hamming_ids: np.ndarray, k: int):
+	def refine(self, data: np.ndarray, queries: np.ndarray, hamming_ids: np.ndarray, k: int, chunk_size: int=None):
 		data, queries, ftype_name = self._clean_float_input(data, queries)
 		fun = getattr(self._raw, "refine_{:}".format(ftype_name))
-		return fun(data, queries, hamming_ids, k)
-	def refine_h5(self, data_file: str, data_dataset: str, queries: np.ndarray, hamming_ids: np.ndarray, k: int):
+		return fun(data, queries, hamming_ids, k, chunk_size)
+	def refine_h5(self, data_file: str, data_dataset: str, queries: np.ndarray, hamming_ids: np.ndarray, k: int, chunk_size: int=None):
 		ftype_name = _float_type_name(queries.dtype)
 		fun = getattr(self._raw, "refine_h5_{:}".format(ftype_name))
-		return fun(data_file, data_dataset, queries, hamming_ids, k)
-	def query(self, data, data_bin, queries, queries_bin, k, n):
+		return fun(data_file, data_dataset, queries, hamming_ids, k, chunk_size)
+	def refine_with_other_bin(self, data_bin: np.ndarray, queries_bin: np.ndarray, hamming_ids: np.ndarray, k: int, chunk_size: int=None):
+		data_bin, queries_bin, btype_name = self._clean_bin_input(data_bin, queries_bin)
+		fun = getattr(self._raw, "refine_with_other_bin_{:}".format(btype_name))
+		return fun(data_bin, queries_bin, hamming_ids, k, chunk_size)
+	def query(self, data, data_bin, queries, queries_bin, k, n, chunk_size=None):
 		assert k <= n
 		_, candidate_ids = self.brute_force_k_smallest_hamming(data_bin, queries_bin, n)
-		return self.refine(data, queries, candidate_ids, k)
-	def query_h5(self, data_file, data_dataset, data_bin, queries, queries_bin, k, n):
+		return self.refine(data, queries, candidate_ids, k, chunk_size)
+	def query_h5(self, data_file, data_dataset, data_bin, queries, queries_bin, k, n, chunk_size=None):
 		assert k <= n
 		_, candidate_ids = self.brute_force_k_smallest_hamming(data_bin, queries_bin, n)
-		return self.refine_h5(data_file, data_dataset, queries, candidate_ids, k)
+		return self.refine_h5(data_file, data_dataset, queries, candidate_ids, k, chunk_size)
+	def query_cascade(self, data, data_bins, queries, queries_bins, k, ns, chunk_size=None):
+		assert len(data_bins) > 0
+		assert len(data_bins) == len(queries_bins)
+		assert len(data_bins) == len(ns)
+		btype_name = None
+		cleaned_data_bins = []
+		cleaned_queries_bins = []
+		for data_bin, queries_bin in zip(data_bins, queries_bins):
+			data_bin, queries_bin, local_btype_name = self._clean_bin_input(data_bin, queries_bin)
+			if btype_name is None: btype_name = local_btype_name
+			elif btype_name != local_btype_name: raise ValueError("All binarizations must have the same data type (received '{:}' and '{:}').".format(btype_name, local_btype_name))
+			cleaned_data_bins.append(data_bin)
+			cleaned_queries_bins.append(queries_bin)
+		fun = getattr(self._raw, "cascading_k_smallest_hamming_{:}".format(btype_name))
+		_, candidate_ids = fun(cleaned_data_bins, cleaned_queries_bins, ns)
+		return self.refine(data, queries, candidate_ids, k, chunk_size)
+	def query_cascade_h5(self, data_file: str, data_dataset: str, data_bins, queries, queries_bins, k, ns, chunk_size=None):
+		assert len(data_bins) > 0
+		assert len(data_bins) == len(queries_bins)
+		assert len(data_bins) == len(ns)
+		btype_name = None
+		cleaned_data_bins = []
+		cleaned_queries_bins = []
+		for data_bin, queries_bin in zip(data_bins, queries_bins):
+			data_bin, queries_bin, local_btype_name = self._clean_bin_input(data_bin, queries_bin)
+			if btype_name is None: btype_name = local_btype_name
+			elif btype_name != local_btype_name: raise ValueError("All binarizations must have the same data type (received '{:}' and '{:}').".format(btype_name, local_btype_name))
+			cleaned_data_bins.append(data_bin)
+			cleaned_queries_bins.append(queries_bin)
+		fun = getattr(self._raw, "cascading_k_smallest_hamming_{:}".format(btype_name))
+		_, candidate_ids = fun(cleaned_data_bins, cleaned_queries_bins, ns)
+		return self.refine_h5(data_file, data_dataset, queries, candidate_ids, k, chunk_size)
 
 class THX:
 	def __init__(

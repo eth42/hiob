@@ -428,13 +428,15 @@ macro_rules! eval_fun_gen_p {
 					data: PyReadonlyArray2<$prec_type>,
 					queries: PyReadonlyArray2<$prec_type>,
 					hamming_neighbors: PyReadonlyArray2<usize>,
-					k: usize
+					k: usize,
+					chunk_size: Option<usize>,
 				) -> (&'py PyArray2<$prec_type>, &'py PyArray2<usize>) {
 					let (dots, idxs) = self.bin_eval.refine(
 						&data.as_array(),
 						&queries.as_array(),
 						&hamming_neighbors.as_array(),
-						k
+						k,
+						chunk_size,
 					);
 					(dots.to_pyarray(py), idxs.to_pyarray(py))
 				}
@@ -445,14 +447,16 @@ macro_rules! eval_fun_gen_p {
 					data_dataset: String,
 					queries: PyReadonlyArray2<$prec_type>,
 					hamming_neighbors: PyReadonlyArray2<usize>,
-					k: usize
+					k: usize,
+					chunk_size: Option<usize>,
 				) -> (&'py PyArray2<$prec_type>, &'py PyArray2<usize>) {
 					let (dots, idxs) = self.bin_eval.refine_h5(
 						data_file.as_str(),
 						data_dataset.as_str(),
 						&queries.as_array(),
 						&hamming_neighbors.as_array(),
-						k
+						k,
+						chunk_size,
 					);
 					(dots.to_pyarray(py), idxs.to_pyarray(py))
 				}
@@ -498,6 +502,42 @@ macro_rules! eval_fun_gen_b {
 							n
 						)
 					)
+				}
+				pub fn [<refine_with_other_bin_ $bin_type>]<'py>(
+					&self,
+					py: Python<'py>,
+					data_bin: PyReadonlyArray2<$bin_type>,
+					queries_bin: PyReadonlyArray2<$bin_type>,
+					hamming_ids: PyReadonlyArray2<usize>,
+					k: usize,
+					chunk_size: Option<usize>
+				) -> (&'py PyArray2<usize>, &'py PyArray2<usize>) {
+					let (dists, idxs) = self.bin_eval.refine_with_other_bin(
+						&data_bin.as_array(),
+						&queries_bin.as_array(),
+						&hamming_ids.as_array(),
+						k,
+						chunk_size
+					);
+					(dists.to_pyarray(py), idxs.to_pyarray(py))
+				}
+				pub fn [<cascading_k_smallest_hamming_ $bin_type>]<'py>(
+					&self,
+					py: Python<'py>,
+					data_bins: Vec<PyReadonlyArray2<$bin_type>>,
+					queries_bins: Vec<PyReadonlyArray2<$bin_type>>,
+					ks: Vec<usize>,
+					chunk_size: Option<usize>
+				) -> (&'py PyArray2<usize>, &'py PyArray2<usize>) {
+					let data_bins: Vec<_> = (0..data_bins.len()).map(|i| data_bins[i].as_array()).collect();
+					let queries_bins: Vec<_> = (0..queries_bins.len()).map(|i| queries_bins[i].as_array()).collect();
+					let (dists, idxs) = self.bin_eval.cascading_k_smallest_hamming(
+						&data_bins,
+						&queries_bins,
+						&ks,
+						chunk_size
+					);
+					(dists.to_pyarray(py), idxs.to_pyarray(py))
 				}
 			}
 		}
