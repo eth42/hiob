@@ -1,4 +1,5 @@
-use std::{ops::{Mul, Div, Sub}, f64::consts::PI};
+use std::{ops::{Mul, Div, Sub, AddAssign}, f64::consts::PI};
+use std::iter::Sum;
 
 
 use num::{Float};
@@ -14,7 +15,7 @@ use crate::{
 	random::RandomPermutationGenerator,
 	data::{MatrixDataSource, AsyncMatrixDataSource, CachingH5PyReader, CachingNumpyEquivalent}
 };
-use crate::measures::{DotProduct, InnerProduct};
+use crate::float_vectors::{DotProduct, InnerProduct};
 use crate::bits::{Bits};
 use crate::progress::{named_range, named_par_iter, par_iter, MaybeSend, MaybeSync};
 
@@ -28,11 +29,10 @@ macro_rules! trait_combiner {
 		impl<T: $t $(+ $ts)*> $combination_name for T {}
 	};
 }
-
 #[cfg(feature="rust-hdf5")]
-trait_combiner!(HIOBFloat: CachingNumpyEquivalent+H5Type+Float+ScalarOperand+MaybeSend+MaybeSync);
+trait_combiner!(HIOBFloat: CachingNumpyEquivalent+H5Type+Float+Sum+AddAssign+ScalarOperand+MaybeSend+MaybeSync);
 #[cfg(not(feature="rust-hdf5"))]
-trait_combiner!(HIOBFloat: CachingNumpyEquivalent+Float+ScalarOperand+MaybeSend+MaybeSync);
+trait_combiner!(HIOBFloat: CachingNumpyEquivalent+Float+Sum+AddAssign+ScalarOperand+MaybeSend+MaybeSync);
 trait_combiner!(HIOBBits: Bits+Clone+MaybeSend+MaybeSync);
 
 pub struct HIOB<F: HIOBFloat, B: HIOBBits> where Array1<B>: BitVectorMut {
@@ -46,7 +46,6 @@ pub struct HIOB<F: HIOBFloat, B: HIOBBits> where Array1<B>: BitVectorMut {
 	// center_bin_length: usize,
 	// data_bins: Array2<B>,
 	data_bins_t: Array2<B>,
-	product: DotProduct<F>,
 	overlap_mat: Array2<usize>,
 	sim_mat: Array2<f64>,
 	sim_sums: Array1<f64>,
@@ -98,7 +97,6 @@ impl<F: HIOBFloat, B: HIOBBits> HIOB<F, B> where Array1<B>: BitVectorMut {
 			// center_bin_length: center_bin_length,
 			// data_bins: Array2::from_elem([n, data_bin_length], B::zeros()),
 			data_bins_t: Array2::from_elem([n_bits, center_bin_length], B::zeros()),
-			product: DotProduct::new(),
 			overlap_mat: Array2::from_elem([n_bits, n_bits], n),
 			sim_mat: Array2::from_elem([n_bits, n_bits], 0.0),
 			sim_sums: Array1::from_elem(n_bits, 0.0),
@@ -188,7 +186,7 @@ impl<F: HIOBFloat, B: HIOBBits> HIOB<F, B> where Array1<B>: BitVectorMut {
 					(0..B::size()).for_each(|i_bit| {
 						let i_pnt = i_item*B::size()+i_bit;
 						if i_pnt < self.ransac_sub_sample {
-							let prod = self.product.prod(
+							let prod = DotProduct::prod_arrs(
 								&c,
 								&self.data.row(unsafe { *samples.get_unchecked(i_pnt) })
 							);
@@ -238,7 +236,7 @@ impl<F: HIOBFloat, B: HIOBBits> HIOB<F, B> where Array1<B>: BitVectorMut {
 			points.axis_iter(Axis(0))
 			.enumerate()
 			.for_each(|(i_bit, point)| {
-				let bit = self.product.prod(&c, &point) >= F::zero();
+				let bit = DotProduct::prod_arrs(&c, &point) >= F::zero();
 				bits.set_bit_unchecked(i_bit, bit);
 			});
 			*target = bits;
@@ -258,8 +256,12 @@ impl<F: HIOBFloat, B: HIOBBits> HIOB<F, B> where Array1<B>: BitVectorMut {
 			(j_center, overlap, sim, old_sim)
 		})
 		.collect::<Vec<(usize, usize, f64, f64)>>()
-		.into_iter()
+		.iter()
 		.for_each(|(j_center, overlap, sim, old_sim)| unsafe {
+			let j_center = *j_center;
+			let overlap = *overlap;
+			let sim = *sim;
+			let old_sim = *old_sim;
 			*self.sim_sums.uget_mut(i_center) += sim;
 			*self.sim_sums.uget_mut(j_center) += sim - old_sim;
 			*self.overlap_mat.uget_mut([i_center,j_center]) = overlap;
@@ -291,19 +293,19 @@ impl<F: HIOBFloat, B: HIOBBits> HIOB<F, B> where Array1<B>: BitVectorMut {
 		let mis = if !self.update_parallel {
 			vec![_random_pair_value(unsafe { _argmax2(&self.sim_mat) })]
 		} else {
-			(0..self.n_bits).into_iter().collect()
+			(0..self.n_bits).collect()
 		};
 		let mut new_centers: Array2<F> = Array2::zeros((mis.len(), self.n_dims));
 		mis.iter().zip(new_centers.axis_iter_mut(Axis(0))).for_each(|(&mi, mut new_center)| {
 			let mjs = if !self.displace_parallel {
 				unsafe { vec![_argmax1(&self.sim_mat.row(mi))] }
 			} else {
-				(0..self.n_bits).into_iter().collect()
+				(0..self.n_bits).collect()
 			};
 			let total_displacement = unsafe {
-				mjs.into_iter()
-				.filter(|mj| mi != *mj)
-				.map(|mj| self.displacement_vec(mi, mj))
+				mjs.iter()
+				.filter(|&mj| mi != *mj)
+				.map(|mj| self.displacement_vec(mi, *mj))
 				.reduce(|u,v| u+v)
 				.unwrap_unchecked()
 			};
@@ -328,7 +330,7 @@ impl<F: HIOBFloat, B: HIOBBits> HIOB<F, B> where Array1<B>: BitVectorMut {
 		.for_each(|(b, lcenters)| {
 			lcenters.axis_iter(Axis(0)).enumerate()
 			.for_each(|(i_bit, center)| {
-				let bit = self.product.prod(&query, &center) >= F::zero();
+				let bit = DotProduct::prod_arrs(&query, &center) >= F::zero();
 				b.set_bit(i_bit, bit);
 			});
 		});
@@ -344,7 +346,7 @@ impl<F: HIOBFloat, B: HIOBBits> HIOB<F, B> where Array1<B>: BitVectorMut {
 			.for_each(|(b, lcenters)| {
 				lcenters.axis_iter(Axis(0)).enumerate()
 				.for_each(|(i_bit, center)| {
-					let bit = self.product.prod(&query, &center) >= F::zero();
+					let bit = DotProduct::prod_arrs(&query, &center) >= F::zero();
 					b.set_bit(i_bit, bit);
 				});
 			});

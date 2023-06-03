@@ -10,7 +10,8 @@ use crate::bit_vectors::{BitVector};
 use crate::bits::Bits;
 use crate::data::{MatrixDataSource, H5PyDataset};
 use crate::progress::{named_par_iter, MaybeSync, par_iter};
-use crate::measures::{DotProduct, InnerProduct};
+use crate::float_vectors::{InnerProduct, DotProduct};
+// use crate::measures::{DotProduct, InnerProduct};
 use crate::heaps::{MaxHeap, MinHeap, GenericHeap};
 
 pub struct BinarizationEvaluator {}
@@ -68,7 +69,6 @@ impl BinarizationEvaluator {
 		queries: &ArrayBase<D2, Ix2>,
 		k: usize
 	) -> (Array2<F>, Array2<usize>) {
-		let prod = DotProduct::new();
 		let mut nn_dots = Array2::zeros((queries.shape()[0], k));
 		let mut nn_idxs = Array2::zeros((queries.shape()[0], k));
 		let raw_iter = queries.axis_iter(Axis(0))
@@ -82,7 +82,7 @@ impl BinarizationEvaluator {
 			data.axis_iter(Axis(0))
 			.enumerate()
 			.for_each(|(i_row, row)| unsafe {
-				let v = prod.prod(&row,&q);
+				let v = DotProduct::prod_arrs(&row,&q);
 				if heap.size() < k {
 					heap.push(v, i_row);
 				} else if heap.peek().unwrap_unchecked().0 < v {
@@ -191,7 +191,6 @@ impl BinarizationEvaluator {
 		assert!(k <= hamming_ids.shape()[1]);
 		let chunk_size = chunk_size.unwrap_or(100);
 		let n_queries = queries.shape()[0];
-		let prod = DotProduct::<F>::new();
 		let mut dot_prods = Array2::from_elem((n_queries,k), F::zero());
 		let mut neighbor_ids = Array2::zeros((n_queries, k));
 		let raw_iter = queries.axis_chunks_iter(Axis(0), chunk_size)
@@ -213,7 +212,7 @@ impl BinarizationEvaluator {
 				candidates.axis_iter(Axis(0))
 				.zip(h_nn_ids.iter())
 				.for_each(|(row, &i_row)| unsafe {
-					let v = prod.prod(&row,&query);
+					let v = DotProduct::prod_arrs(&row,&query);
 					if heap.size() < k {
 						heap.push(v, i_row);
 					} else if heap.peek().unwrap_unchecked().0 < v {
@@ -410,25 +409,23 @@ fn test_brute_force_k_nearest_dot() {
 	use ndarray::Slice;
 	/* Initialize objects */
 	let bin_eval = BinarizationEvaluator::new();
-	let prod = DotProduct::new();
 	let data: Array2<f32> = Array2::from_shape_simple_fn((n_data,n_dim), random);
 	/* Compute true largest products */
-	let products = prod.prods(&data.row(0), &data);
-	let mut sorted_products = products.into_iter().collect::<Vec<f32>>();
+	let mut sorted_products = data.axis_iter(Axis(0)).map(|row| DotProduct::prod_arrs(&data.row(0), &row)).collect::<Vec<_>>();
 	sorted_products.sort_by(|a,b| a.partial_cmp(b).unwrap());
 	let sorted_products = sorted_products.split_at(n_data-k_nn).1.to_vec();
 	/* Compute predicted largest products */
 	let (_, nns) = bin_eval.brute_force_k_largest_dot(
 		&data,
-		&data.slice_axis(Axis(0), Slice::from(0..1)),
+		&data.slice_axis(Axis(0), Slice::from(0usize..1usize)),
 		k_nn
 	);
-	let mut sorted_nn_products = nns.into_iter().map(|i| prod.prod(&data.row(0), &data.row(i))).collect::<Vec<f32>>();
+	let mut sorted_nn_products = nns.iter().map(|&i| DotProduct::prod_arrs(&data.row(0), &data.row(i))).collect::<Vec<f32>>();
 	sorted_nn_products.sort_by(|a,b| a.partial_cmp(b).unwrap());
 	/* Assert products are the same */
-	sorted_products.into_iter()
-	.zip(sorted_nn_products.into_iter())
-	.for_each(|(a,b)| assert!((a-b).abs() < 1e-6));
+	sorted_products.iter()
+	.zip(sorted_nn_products.iter())
+	.for_each(|(&a,&b)| assert!((a-b).abs() < 1e-6));
 }
 
 #[test]
@@ -453,15 +450,15 @@ fn test_brute_force_k_nearest_hamming() {
 	/* Compute predicted largest products */
 	let (_, nns) = bin_eval.brute_force_k_smallest_hamming(
 		&data,
-		&data.slice_axis(Axis(0), Slice::from(0..1)),
+		&data.slice_axis(Axis(0), Slice::from(0usize..1usize)),
 		k_nn
 	);
-	let mut sorted_nn_distances = nns.into_iter().map(|i| data.row(i).hamming_dist_same(&data.row(0))).collect::<Vec<usize>>();
+	let mut sorted_nn_distances = nns.iter().map(|i| data.row(*i).hamming_dist_same(&data.row(0))).collect::<Vec<usize>>();
 	sorted_nn_distances.sort_by(|a,b| a.partial_cmp(b).unwrap());
 	/* Assert products are the same */
-	sorted_distances.into_iter()
-	.zip(sorted_nn_distances.into_iter())
-	.for_each(|(a,b)| assert!(((a as isize)-(b as isize)).abs() < 1));
+	sorted_distances.iter()
+	.zip(sorted_nn_distances.iter())
+	.for_each(|(&a,&b)| assert!(((a as isize)-(b as isize)).abs() < 1));
 }
 
 #[test]
@@ -481,7 +478,7 @@ fn test_k_at_n_recall() {
 	let data_nn: Array2<f32> = Array2::from_shape_simple_fn((k_nn,n_dim), random) + n_dim as f32;
 	let data = concatenate(Axis(0), &[data_nn.view(), data_non_nn.view()]).unwrap();
 	let mut data_bin: Array2<u16> = Array2::from_shape_simple_fn((n_data, n_bits), random);
-	(0..k_nn).into_iter().map(|i| i+k_nn/2).for_each(|i| data_bin.row_mut(i).assign(&Array1::zeros(n_bits)));
+	(0..k_nn).map(|i| i+k_nn/2).for_each(|i| data_bin.row_mut(i).assign(&Array1::zeros(n_bits)));
 	let queries: Array2<f32> = Array2::ones((1, n_dim));
 	let queries_bin: Array2<u16> = Array2::zeros((1, n_bits));
 	let recall = bin_eval.k_at_n_recall(&data, &data_bin, &queries, &queries_bin, k_nn, k_nn);
@@ -500,16 +497,16 @@ fn test_k_at_n_recall_prec() {
 	/* Initialize objects */
 	let bin_eval = BinarizationEvaluator::new();
 	let mut data_bin: Array2<u16> = Array2::from_shape_simple_fn((n_data, n_bits), random);
-	(0..k_nn).into_iter().for_each(|i| data_bin.row_mut(i).assign(&Array1::zeros(n_bits)));
+	(0..k_nn).for_each(|i| data_bin.row_mut(i).assign(&Array1::zeros(n_bits)));
 	let queries_bin: Array2<u16> = Array2::zeros((1, n_bits));
-	let true_neighbors = (0..k_nn/2).into_iter().collect::<Vec<usize>>();
+	let true_neighbors = (0..k_nn/2).collect::<Vec<usize>>();
 	let true_neighbors = Array2::from_shape_vec((1,true_neighbors.len()), true_neighbors).unwrap();
 	let recall = bin_eval.k_at_n_recall_prec_dot_neighbors(&data_bin, &queries_bin, &true_neighbors, k_nn);
 	assert!((recall-1.0) < 0.01);
 	let random_neighbor = || {let r: usize = random(); r % n_data};
 	let true_neighbors = Array2::from_shape_simple_fn((1, k_nn), random_neighbor);
 	let recall = bin_eval.k_at_n_recall_prec_dot_neighbors(&data_bin, &queries_bin, &true_neighbors, k_nn);
-	let true_recall = true_neighbors.into_iter().filter(|&i| i < k_nn).collect::<HashSet<usize>>().len() as f64 / k_nn as f64;
+	let true_recall = true_neighbors.iter().map(|i| *i).filter(|i| *i < k_nn).collect::<HashSet<usize>>().len() as f64 / k_nn as f64;
 	assert!((recall-true_recall) < 0.01);
 }
 

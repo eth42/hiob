@@ -1,5 +1,6 @@
 mod bit_vectors;
-mod measures;
+mod float_vectors;
+// mod measures;
 mod binarizer;
 mod bits;
 mod progress;
@@ -22,7 +23,6 @@ use {
 	ndarray_rand::rand_distr::StandardNormal,
 	rand::prelude::*,
 
-	crate::measures::{InnerProduct,DotProduct},
 	crate::binarizer::{HIOB, HIOBFloat, HIOBBits},
 	crate::bit_vectors::{BitVector},
 };
@@ -33,12 +33,12 @@ use {
 	ndarray_rand::rand_distr::StandardNormal,
 	rand::prelude::*,
 
-	crate::measures::{InnerProduct,DotProduct},
+	// crate::float_vectors::{InnerProduct,DotProduct},
 	crate::binarizer::{HIOB, HIOBFloat, HIOBBits},
 	crate::bit_vectors::{BitVector},
 };
 
-fn _print_hiob_oberlaps<F: HIOBFloat, B: HIOBBits>(hiob: &HIOB<F,B>) {
+fn _print_hiob_overlaps<F: HIOBFloat, B: HIOBBits>(hiob: &HIOB<F,B>) {
 	hiob.get_overlap_mat().axis_iter(Axis{0: 0}).for_each(|row| {
 		row.iter().for_each(|v| {
 			print!("{0:>3} ", v);
@@ -170,10 +170,10 @@ fn _test_bit_vectors() {
 
 fn _test_random() {
 	let mut data: Array2<f32> = Array::random((100000,150), StandardNormal{});
-	let prod = DotProduct::new();
+	use crate::float_vectors::{InnerProduct, DotProduct};
 	let norms = (0..data.shape()[0])
 	.map(|i| data.row(i))
-	.map(|row| prod.prod(&row,&row).sqrt())
+	.map(|row| DotProduct::prod_arrs(&row,&row).sqrt())
 	.collect::<Vec<f32>>();
 	(0..data.shape()[0]).for_each(|i| data.row_mut(i).mapv_inplace(|v| v/norms[i]));
 	let mut hiob: HIOB<f32, u64> = HIOB::new(data.clone(), 100, None, None, None, None, None, None);
