@@ -178,7 +178,8 @@ macro_rules! stochastic_hiob_struct_gen {
 					init_greedy: Option<bool>,
 					init_ransac: Option<bool>,
 					ransac_pairs_per_bit: Option<usize>,
-					ransac_sub_sample: Option<usize>
+					ransac_sub_sample: Option<usize>,
+					noise_std: Option<$prec_type>,
 				) -> PyResult<Self> {
 					let data_source = H5PyDataset::<$prec_type>::new(file.as_str(), dataset.as_str());
 					Ok(Self{shiob: StochasticHIOB::new(
@@ -194,7 +195,8 @@ macro_rules! stochastic_hiob_struct_gen {
 						init_greedy,
 						init_ransac,
 						ransac_pairs_per_bit,
-						ransac_sub_sample
+						ransac_sub_sample,
+						noise_std
 					)})
 				}
 			}
@@ -222,7 +224,8 @@ macro_rules! stochastic_hiob_struct_gen {
 					init_greedy: Option<bool>,
 					init_ransac: Option<bool>,
 					ransac_pairs_per_bit: Option<usize>,
-					ransac_sub_sample: Option<usize>
+					ransac_sub_sample: Option<usize>,
+					noise_std: Option<$prec_type>,
 				) -> PyResult<Self> {
 					Ok(Self{shiob: StochasticHIOB::new(
 						data.as_array().into_owned(),
@@ -237,7 +240,8 @@ macro_rules! stochastic_hiob_struct_gen {
 						init_greedy,
 						init_ransac,
 						ransac_pairs_per_bit,
-						ransac_sub_sample
+						ransac_sub_sample,
+						noise_std,
 					)})
 				}
 			}
@@ -337,6 +341,14 @@ macro_rules! stochastic_hiob_struct_gen {
 				#[setter]
 				pub fn set_displace_parallel(&mut self, b: bool) -> PyResult<()> {
 					Ok(self.shiob.set_displace_parallel(b))
+				}
+				#[getter]
+				pub fn get_noise_std(&self) -> PyResult<Option<$prec_type>> {
+					Ok(self.shiob.get_noise_std())
+				}
+				#[setter]
+				pub fn set_noise_std(&mut self, value: Option<$prec_type>) -> PyResult<()> {
+					self.shiob.set_noise_std(value); Ok(())
 				}
 			}
 		}

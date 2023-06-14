@@ -2,10 +2,12 @@ use std::{ops::{Mul, Div, Sub, AddAssign}, f64::consts::PI};
 use std::iter::Sum;
 
 
+use ndarray_rand::rand_distr::{Normal,Distribution};
 use num::{Float};
 #[cfg(feature="rust-hdf5")]
 use hdf5::H5Type;
 use ndarray::{Slice, Axis, Array2, Array1, ArrayBase, Ix1, ScalarOperand, Data, Ix2, ArrayView2, ArrayView1};
+use rand::thread_rng;
 // use rand::prelude::*;
 #[cfg(feature="parallel")]
 use rayon::iter::{ParallelIterator};
@@ -415,7 +417,8 @@ pub struct StochasticHIOB<F: HIOBFloat, B: HIOBBits, D: MatrixDataSource<F>> whe
 	perm_gen: RandomPermutationGenerator,
 	sample_size: usize,
 	its_per_sample: usize,
-	current_it: usize
+	current_it: usize,
+	noise_std: Option<F>,
 }
 impl<F: HIOBFloat, B: HIOBBits, D: MatrixDataSource<F>> StochasticHIOB<F,B,D> where Array1<B>: BitVectorMut {
 	pub fn new(
@@ -429,11 +432,20 @@ impl<F: HIOBFloat, B: HIOBBits, D: MatrixDataSource<F>> StochasticHIOB<F,B,D> wh
 		init_greedy: Option<bool>,
 		init_ransac: Option<bool>,
 		ransac_pairs_per_bit: Option<usize>,
-		ransac_sub_sample: Option<usize>
+		ransac_sub_sample: Option<usize>,
+		noise_std: Option<F>,
 	) -> Self {
 		let scale = scale.unwrap_or(F::one());
 		let mut perm_gen = RandomPermutationGenerator::new(data_source.n_rows(), perm_gen_rounds.unwrap_or(4));
-		let initial_data = data_source.get_rows(perm_gen.next_usizes(sample_size));
+		let mut initial_data = data_source.get_rows(perm_gen.next_usizes(sample_size));
+		if noise_std.is_some() {
+			let mut rng = thread_rng();
+			let normal: Normal<f64> = Normal::new(
+				0.,
+				noise_std.unwrap().to_f64().unwrap()
+			).unwrap();
+			initial_data.mapv_inplace(|v| v + F::from(normal.sample(&mut rng)).unwrap());
+		}
 		StochasticHIOB {
 			wrapped_hiob: HIOB::new(
 				initial_data,
@@ -449,13 +461,22 @@ impl<F: HIOBFloat, B: HIOBBits, D: MatrixDataSource<F>> StochasticHIOB<F,B,D> wh
 			perm_gen: perm_gen,
 			sample_size: sample_size,
 			its_per_sample: its_per_sample,
-			current_it: 0
+			current_it: 0,
+			noise_std: noise_std,
 		}
 	}
-	
+
 	pub fn step(&mut self) {
 		if self.current_it >= self.its_per_sample {
-			let new_sample = self.data_source.get_rows(self.perm_gen.next_usizes(self.sample_size));
+			let mut new_sample = self.data_source.get_rows(self.perm_gen.next_usizes(self.sample_size));
+			if self.noise_std.is_some() {
+				let mut rng = thread_rng();
+				let normal: Normal<f64> = Normal::new(
+					0.,
+					self.noise_std.unwrap().to_f64().unwrap()
+				).unwrap();
+				new_sample.mapv_inplace(|v| v + F::from(normal.sample(&mut rng)).unwrap());
+			}
 			let mut new_wrapped_hiob = HIOB::new(
 				new_sample,
 				self.wrapped_hiob.n_bits,
@@ -503,6 +524,8 @@ impl<F: HIOBFloat, B: HIOBBits, D: MatrixDataSource<F>> StochasticHIOB<F,B,D> wh
 	pub fn get_displace_parallel(&self) -> bool { self.wrapped_hiob.get_displace_parallel() }
 	pub fn set_update_parallel(&mut self, b: bool) { self.wrapped_hiob.set_update_parallel(b); }
 	pub fn set_displace_parallel(&mut self, b: bool) { self.wrapped_hiob.set_displace_parallel(b); }
+	pub fn get_noise_std(&self) -> Option<F> { self.noise_std }
+	pub fn set_noise_std(&mut self, value: Option<F>) { self.noise_std = value; }
 
 }
 

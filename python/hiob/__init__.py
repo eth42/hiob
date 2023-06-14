@@ -157,6 +157,7 @@ class StochasticHIOB:
 		ransac_sub_sample: int = None,
 		update_parallel: bool = None,
 		displace_parallel: bool = None,
+		noise_std: float = None,
 	):
 		if n_bits < 1:
 			raise ValueError("The number of bits should be at least 1.")
@@ -180,6 +181,7 @@ class StochasticHIOB:
 			init_ransac,
 			ransac_pairs_per_bit,
 			ransac_sub_sample,
+			noise_std,
 		)
 		self._post_constructor_init(specific_type, update_parallel, displace_parallel)
 		return self
