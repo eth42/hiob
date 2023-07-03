@@ -250,10 +250,10 @@ class BinarizationEvaluator:
 		data, queries, ftype_name = self._clean_float_input(data, queries)
 		fun = getattr(self._raw, "brute_force_k_largest_dot_{:}".format(ftype_name))
 		return fun(data, queries, k)
-	def brute_force_k_smallest_hamming(self, data_bin: np.ndarray, queries_bin: np.ndarray, k: int):
+	def brute_force_k_smallest_hamming(self, data_bin: np.ndarray, queries_bin: np.ndarray, k: int, chunk_size: bool=None):
 		data_bin, queries_bin, btype_name = self._clean_bin_input(data_bin, queries_bin)
 		fun = getattr(self._raw, "brute_force_k_smallest_hamming_{:}".format(btype_name))
-		return fun(data_bin, queries_bin, k)
+		return fun(data_bin, queries_bin, k, chunk_size)
 	def k_at_n_recall_prec_dot_neighbors(self, data_bin: np.ndarray, queries_bin: np.ndarray, true_neighbors: np.ndarray, n: int):
 		data_bin, queries_bin, btype_name = self._clean_bin_input(data_bin, queries_bin)
 		true_neighbors = np.array(true_neighbors).astype(self._usize)

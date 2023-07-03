@@ -27,35 +27,10 @@ impl BinarizationEvaluator {
 		&self,
 		data: &ArrayBase<D1, Ix2>,
 		queries: &ArrayBase<D2, Ix2>,
-		k: usize
+		k: usize,
+		chunk_size: Option<usize>,
 	) -> (Array2<usize>, Array2<usize>) {
-		let mut nn_dists = Array2::zeros((queries.shape()[0], k));
-		let mut nn_idxs = Array2::zeros((queries.shape()[0], k));
-		let raw_iter = queries.axis_iter(Axis(0))
-		.zip(nn_dists.axis_iter_mut(Axis(0)))
-		.zip(nn_idxs.axis_iter_mut(Axis(0)));
-		named_par_iter(raw_iter, "Computing neighbors")
-		.map(|((a,b),c)| (a,b,c))
-		.for_each(|(q, mut nn_dist, mut nn_idx)| {
-			let mut heap = MaxHeap::<usize, usize>::new();
-			heap.reserve(k);
-			data.axis_iter(Axis(0))
-			.enumerate()
-			.for_each(|(i_row, row)| unsafe {
-				let v = row.hamming_dist_same(&q);
-				if heap.size() < k {
-					heap.push(v, i_row);
-				} else if heap.peek().unwrap_unchecked().0 > v {
-					heap.pop();
-					heap.push(v, i_row);
-				}
-			});
-			heap.into_iter().zip((0..k).rev()).for_each(|((dist, idx), i_nn)| unsafe {
-				*nn_dist.uget_mut(i_nn) = dist;
-				*nn_idx.uget_mut(i_nn) = idx;
-			})
-		});
-		(nn_dists, nn_idxs)
+		self.cascading_k_smallest_hamming(&vec![data.view()], &vec![queries.view()], &vec![k], chunk_size)
 	}
 
 	
@@ -115,7 +90,7 @@ impl BinarizationEvaluator {
 		n: usize
 	) -> f64 {
 		let (_, dot_neighbors) = self.brute_force_k_largest_dot(data, queries, k);
-		let (_, hamming_neighbors) = self.brute_force_k_smallest_hamming(data_bin, queries_bin, n);
+		let (_, hamming_neighbors) = self.brute_force_k_smallest_hamming(data_bin, queries_bin, n, None);
 		self.k_at_n_recall_prec_all(&dot_neighbors, &hamming_neighbors)
 	}
 
@@ -131,7 +106,7 @@ impl BinarizationEvaluator {
 		dot_neighbors: &ArrayBase<D3, Ix2>,
 		n: usize
 	) -> f64 {
-		let (_, hamming_neighbors) = self.brute_force_k_smallest_hamming(data_bin, queries_bin, n);
+		let (_, hamming_neighbors) = self.brute_force_k_smallest_hamming(data_bin, queries_bin, n, None);
 		self.k_at_n_recall_prec_all(dot_neighbors, &hamming_neighbors)
 	}
 
@@ -609,7 +584,8 @@ fn test_brute_force_k_nearest_hamming() {
 	let (_, nns) = bin_eval.brute_force_k_smallest_hamming(
 		&data,
 		&data.slice_axis(Axis(0), Slice::from(0usize..1usize)),
-		k_nn
+		k_nn,
+		Some(1)
 	);
 	let mut sorted_nn_distances = nns.iter().map(|i| data.row(*i).hamming_dist_same(&data.row(0))).collect::<Vec<usize>>();
 	sorted_nn_distances.sort_by(|a,b| a.partial_cmp(b).unwrap());

@@ -514,12 +514,14 @@ macro_rules! eval_fun_gen_b {
 					py: Python<'py>,
 					data_bin: PyReadonlyArray2<$bin_type>,
 					queries_bin: PyReadonlyArray2<$bin_type>,
-					k: usize
+					k: usize,
+					chunk_size: Option<usize>
 				) -> (&'py PyArray2<usize>, &'py PyArray2<usize>) {
 					let (dists, idxs) = self.bin_eval.brute_force_k_smallest_hamming(
 						&data_bin.as_array(),
 						&queries_bin.as_array(),
-						k
+						k,
+						chunk_size
 					);
 					(dists.to_pyarray(py), idxs.to_pyarray(py))
 				}
