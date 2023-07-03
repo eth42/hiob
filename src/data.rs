@@ -12,6 +12,8 @@ use {
 #[cfg(feature="parallel")]
 use rayon::iter::ParallelIterator;
 use ndarray::{Array1, Array2, Slice, Data, ArrayBase, Ix2, Axis};
+#[cfg(feature="half")]
+use half::f16;
 
 pub trait MatrixDataSource<T> {
 	fn n_rows(&self) -> usize;
@@ -110,6 +112,8 @@ make_numpy_equivalent!(
 	(bool, "bool_"),
 	(u8, "uint8"), (u16, "uint16"),	(u32, "uint32"), (u64, "uint64")
 );
+#[cfg(feature="half")]
+make_numpy_equivalent!((f16, "float16"));
 
 pub struct H5PyDataset<T: NumpyEquivalent> {
 	_phantom: PhantomData<T>,

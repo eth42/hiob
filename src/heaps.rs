@@ -43,6 +43,9 @@ pub trait GenericHeap: IntoIterator {
 	fn reserve(&mut self, size: usize) {
 		self.wrapped_heap_mut().reserve(size);
 	}
+	fn clear(&mut self) {
+		self.wrapped_heap_mut().clear();
+	}
 }
 
 

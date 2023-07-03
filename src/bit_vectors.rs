@@ -164,6 +164,7 @@ impl<'a, B: Bits, It: Iterator<Item=&'a B>> BitsToBoolIterator<'a, B, It> {
 impl<'a, B: Bits, It: Iterator<Item=&'a B>> Iterator for BitsToBoolIterator<'a, B, It> {
 	type Item=bool;
 
+	#[inline]
 	fn next(&mut self) -> Option<Self::Item> {
 		if self.bit_offset == 0 {
 			self.curr_val = self.wrapped_iterator.next();
@@ -187,23 +188,28 @@ impl<'a, B: Bits, It: Iterator<Item=&'a B>> Iterator for BitsToBoolIterator<'a, 
 impl<B: Bits> BitVector for Vec<B> {
 	type BitIterator<'a> = BitsToBoolIterator<'a, B, std::slice::Iter<'a, B>> where B: 'a;
 
+	#[inline(always)]
 	fn size(&self) -> usize {
 		self.len() * B::size()
 	}
+	#[inline(always)]
 	fn iter_bits<'a>(&'a self) -> Self::BitIterator<'a> {
 		BitsToBoolIterator::new(<[B]>::iter(&self))
 	}
+	#[inline(always)]
 	fn get_bit_unchecked(&self, i: usize) -> bool {
 		let entry = i / B::size();
 		let bit_index = i % B::size();
 		unsafe { self.get_unchecked(entry).get_bit_unchecked(bit_index) }
 	}
+	#[inline(always)]
 	fn hamming_dist_same(&self, other: &Self) -> usize {
 		<[B]>::iter(&self)
 		.zip(<[B]>::iter(&other))
 		.map(|(a,b)| a.hamming_dist(b))
 		.sum()
 	}
+	#[inline(always)]
 	fn dot_prod_same(&self, other: &Self) -> usize {
 		<[B]>::iter(&self)
 		.zip(<[B]>::iter(&other))
@@ -211,9 +217,11 @@ impl<B: Bits> BitVector for Vec<B> {
 		.sum()
 	}
 
+	#[inline(always)]
 	fn count_bits(&self) -> usize {
 		self.iter().map(|bits| bits.count_bits()).sum()
 	}
+	#[inline(always)]
 	fn count_bits_range_unchecked(&self, lo: usize, hi: usize) -> usize {
 		let first_item = lo / B::size();
 		let last_item = (hi-1) / B::size();
@@ -243,23 +251,28 @@ impl<B: Bits> BitVector for Vec<B> {
 impl<B: Bits> BitVector for Array1<B> {
 	type BitIterator<'a> = BitsToBoolIterator<'a, B, ndarray::iter::Iter<'a, B, Ix1>> where B: 'a;
 
+	#[inline(always)]
 	fn size(&self) -> usize {
 		self.len() * B::size()
 	}
+	#[inline(always)]
 	fn iter_bits<'a>(&'a self) -> Self::BitIterator<'a> {
 		BitsToBoolIterator::new(<ArrayBase<OwnedRepr<B>,Ix1>>::iter(&self))
 	}
+	#[inline(always)]
 	fn get_bit_unchecked(&self, i: usize) -> bool {
 		let entry = i / B::size();
 		let bit_index = i % B::size();
 		unsafe { self.uget(entry).get_bit_unchecked(bit_index) }
 	}
+	#[inline(always)]
 	fn hamming_dist_same(&self, other: &Self) -> usize {
 		<ArrayBase<OwnedRepr<B>,Ix1>>::iter(&self)
 		.zip(<ArrayBase<OwnedRepr<B>,Ix1>>::iter(&other))
 		.map(|(a,b)| a.hamming_dist(b))
 		.sum()
 	}
+	#[inline(always)]
 	fn dot_prod_same(&self, other: &Self) -> usize {
 		<ArrayBase<OwnedRepr<B>,Ix1>>::iter(&self)
 		.zip(<ArrayBase<OwnedRepr<B>,Ix1>>::iter(&other))
@@ -267,9 +280,11 @@ impl<B: Bits> BitVector for Array1<B> {
 		.sum()
 	}
 
+	#[inline(always)]
 	fn count_bits(&self) -> usize {
 		self.iter().map(|bits| bits.count_bits()).sum()
 	}
+	#[inline(always)]
 	fn count_bits_range_unchecked(&self, lo: usize, hi: usize) -> usize {
 		let first_item = lo / B::size();
 		let last_item = (hi-1) / B::size();
@@ -299,23 +314,28 @@ impl<B: Bits> BitVector for Array1<B> {
 impl<'x, B: Bits> BitVector for ArrayView1<'x, B> {
 	type BitIterator<'a> = BitsToBoolIterator<'a, B, ndarray::iter::Iter<'a, B, Ix1>> where B: 'a, 'x: 'a;
 
+	#[inline(always)]
 	fn size(&self) -> usize {
 		self.len() * B::size()
 	}
+	#[inline(always)]
 	fn iter_bits<'a>(&'a self) -> Self::BitIterator<'a> {
 		BitsToBoolIterator::new(<ArrayBase<ViewRepr<&'x B>,Ix1>>::iter(&self))
 	}
+	#[inline(always)]
 	fn get_bit_unchecked(&self, i: usize) -> bool {
 		let entry = i / B::size();
 		let bit_index = i % B::size();
 		unsafe { self.uget(entry).get_bit_unchecked(bit_index) }
 	}
+	#[inline(always)]
 	fn hamming_dist_same<'y>(&self, other: &ArrayView1<'y, B>) -> usize {
 		<ArrayBase<ViewRepr<&'x B>,Ix1>>::iter(&self)
 		.zip(<ArrayBase<ViewRepr<&'y B>,Ix1>>::iter(&other))
 		.map(|(a,b)| a.hamming_dist(b))
 		.sum()
 	}
+	#[inline(always)]
 	fn dot_prod_same(&self, other: &Self) -> usize {
 		<ArrayBase<ViewRepr<&'x B>,Ix1>>::iter(&self)
 		.zip(<ArrayBase<ViewRepr<&'x B>,Ix1>>::iter(&other))
@@ -323,9 +343,11 @@ impl<'x, B: Bits> BitVector for ArrayView1<'x, B> {
 		.sum()
 	}
 
+	#[inline(always)]
 	fn count_bits(&self) -> usize {
 		self.iter().map(|bits| bits.count_bits()).sum()
 	}
+	#[inline(always)]
 	fn count_bits_range_unchecked(&self, lo: usize, hi: usize) -> usize {
 		let first_item = lo / B::size();
 		let last_item = (hi-1) / B::size();
@@ -355,23 +377,28 @@ impl<'x, B: Bits> BitVector for ArrayView1<'x, B> {
 impl<'x, B: Bits> BitVector for ArrayViewMut1<'x, B> {
 	type BitIterator<'a> = BitsToBoolIterator<'a, B, ndarray::iter::Iter<'a, B, Ix1>> where B: 'a, 'x: 'a;
 
+	#[inline(always)]
 	fn size(&self) -> usize {
 		self.len() * B::size()
 	}
+	#[inline(always)]
 	fn iter_bits<'a>(&'a self) -> Self::BitIterator<'a> {
 		BitsToBoolIterator::new(<ArrayBase<ViewRepr<&'x mut B>,Ix1>>::iter(&self))
 	}
+	#[inline(always)]
 	fn get_bit_unchecked(&self, i: usize) -> bool {
 		let entry = i / B::size();
 		let bit_index = i % B::size();
 		unsafe { self.uget(entry).get_bit_unchecked(bit_index) }
 	}
+	#[inline(always)]
 	fn hamming_dist_same(&self, other: &Self) -> usize {
 		<ArrayBase<ViewRepr<&'x mut B>,Ix1>>::iter(self)
 		.zip(<ArrayBase<ViewRepr<&'x mut B>,Ix1>>::iter(other))
 		.map(|(a,b)| a.hamming_dist(b))
 		.sum()
 	}
+	#[inline(always)]
 	fn dot_prod_same(&self, other: &Self) -> usize {
 		<ArrayBase<ViewRepr<&'x mut B>,Ix1>>::iter(self)
 		.zip(<ArrayBase<ViewRepr<&'x mut B>,Ix1>>::iter(other))
@@ -379,9 +406,11 @@ impl<'x, B: Bits> BitVector for ArrayViewMut1<'x, B> {
 		.sum()
 	}
 	
+	#[inline(always)]
 	fn count_bits(&self) -> usize {
 		self.iter().map(|bits| bits.count_bits()).sum()
 	}
+	#[inline(always)]
 	fn count_bits_range_unchecked(&self, lo: usize, hi: usize) -> usize {
 		let first_item = lo / B::size();
 		let last_item = (hi-1) / B::size();
@@ -411,6 +440,7 @@ impl<'x, B: Bits> BitVector for ArrayViewMut1<'x, B> {
 
 
 impl<B: Bits> BitVectorMut for Vec<B> {
+	#[inline(always)]
 	fn set_bit_unchecked(&mut self, i: usize, v: bool) {
 		let entry = i / B::size();
 		let bit_index = i % B::size();
@@ -418,6 +448,7 @@ impl<B: Bits> BitVectorMut for Vec<B> {
 	}
 }
 impl<B: Bits> BitVectorMut for Array1<B> {
+	#[inline(always)]
 	fn set_bit_unchecked(&mut self, i: usize, v: bool) {
 		let entry = i / B::size();
 		let bit_index = i % B::size();
@@ -425,6 +456,7 @@ impl<B: Bits> BitVectorMut for Array1<B> {
 	}
 }
 impl<'x, B: Bits> BitVectorMut for ArrayViewMut1<'x, B> {
+	#[inline(always)]
 	fn set_bit_unchecked(&mut self, i: usize, v: bool) {
 		let entry = i / B::size();
 		let bit_index = i % B::size();
@@ -434,20 +466,24 @@ impl<'x, B: Bits> BitVectorMut for ArrayViewMut1<'x, B> {
 
 
 impl<B: Bits> BitVectorOwned for Vec<B> {
+	#[inline(always)]
 	fn zeros(capacity: usize) -> Self {
 		let n_buckets = capacity / B::size() + (if capacity % B::size() > 0 {1} else {0});
 		vec![B::zeros(); n_buckets]
 	}
+	#[inline(always)]
 	fn ones(capacity: usize) -> Self {
 		let n_buckets = capacity / B::size() + (if capacity % B::size() > 0 {1} else {0});
 		vec![B::ones(); n_buckets]
 	}
 }
 impl<B: Bits> BitVectorOwned for Array1<B> {
+	#[inline(always)]
 	fn zeros(capacity: usize) -> Self {
 		let n_buckets = capacity / B::size() + (if capacity % B::size() > 0 {1} else {0});
 		Array1::from_elem(n_buckets, B::zeros())
 	}
+	#[inline(always)]
 	fn ones(capacity: usize) -> Self {
 		let n_buckets = capacity / B::size() + (if capacity % B::size() > 0 {1} else {0});
 		Array1::from_elem(n_buckets, B::ones())
@@ -455,19 +491,23 @@ impl<B: Bits> BitVectorOwned for Array1<B> {
 }
 
 impl<B: Bits> BitVectorMutOwned for Vec<B> {
+	#[inline(always)]
 	fn not_same(&self) -> Self {
 		self.iter().map(|v| v.not()).collect()
 	}
+	#[inline(always)]
 	fn or_same(&self, other: &Self) -> Self {
 		self.iter().zip(other.iter())
 		.map(|(a, b)| a.or(b))
 		.collect()
 	}
+	#[inline(always)]
 	fn and_same(&self, other: &Self) -> Self {
 		self.iter().zip(other.iter())
 		.map(|(a, b)| a.and(b))
 		.collect()
 	}
+	#[inline(always)]
 	fn xor_same(&self, other: &Self) -> Self {
 		self.iter().zip(other.iter())
 		.map(|(a, b)| a.xor(b))
@@ -475,19 +515,23 @@ impl<B: Bits> BitVectorMutOwned for Vec<B> {
 	}
 }
 impl<B: Bits> BitVectorMutOwned for Array1<B> {
+	#[inline(always)]
 	fn not_same(&self) -> Self {
 		self.iter().map(|v| v.not()).collect()
 	}
+	#[inline(always)]
 	fn or_same(&self, other: &Self) -> Self {
 		self.iter().zip(other.iter())
 		.map(|(a, b)| a.or(b))
 		.collect()
 	}
+	#[inline(always)]
 	fn and_same(&self, other: &Self) -> Self {
 		self.iter().zip(other.iter())
 		.map(|(a, b)| a.and(b))
 		.collect()
 	}
+	#[inline(always)]
 	fn xor_same(&self, other: &Self) -> Self {
 		self.iter().zip(other.iter())
 		.map(|(a, b)| a.xor(b))

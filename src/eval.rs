@@ -342,6 +342,13 @@ impl BinarizationEvaluator {
 			named_par_iter(raw_iter, "Computing neighbors")
 			.map(|((a,b),c)| (a,b,c))
 			.for_each(|(q_id_chunk, mut nn_dist_chunk, mut nn_idx_chunk)| {
+				let mut heap_cache: Vec<MaxHeap<usize,usize>> = ks.iter()
+				.map(|k| {
+					let mut heap = MaxHeap::<usize,usize>::new();
+					heap.reserve(*k);
+					heap
+				})
+				.collect();
 				let start_q_id = q_id_chunk * chunk_size;
 				let end_q_id = ((q_id_chunk+1) * chunk_size).min(n_queries);
 				(start_q_id..end_q_id)
@@ -349,49 +356,200 @@ impl BinarizationEvaluator {
 				.zip(nn_idx_chunk.axis_iter_mut(Axis(0)))
 				.map(|((a,b),c)| (a,b,c))
 				.for_each(|(q_id, mut nn_dist, mut nn_idx)| {
-					let init_q = queries_bins.get_unchecked(0).row(q_id);
-					let mut heap = MaxHeap::<usize, usize>::new();
-					heap.reserve(init_k);
-					data_bins.get_unchecked(0).axis_iter(Axis(0))
-					.enumerate()
-					.for_each(|(i_row, row)| {
-						let v = row.hamming_dist_same(&init_q);
-						if heap.size() < init_k {
-							heap.push(v, i_row);
-						} else if heap.peek().unwrap_unchecked().0 > v {
-							heap.pop();
-							heap.push(v, i_row);
-						}
-					});
-					(1..n_bins).for_each(|i_bin| {
+					(0..n_bins).for_each(|i_bin| {
 						let q = queries_bins.get_unchecked(i_bin).row(q_id);
 						let k = *ks.get_unchecked(i_bin);
 						let data_bin = data_bins.get_unchecked(i_bin);
-						let mut next_heap = MaxHeap::<usize, usize>::new();
-						next_heap.reserve(k);
-						let old_heap_size = heap.size();
-						(0..old_heap_size)
-						.map(|_| heap.pop().unwrap_unchecked())
-						.for_each(|(old_v, i_row)| {
-							let v = old_v + data_bin.row(i_row).hamming_dist_same(&q);
-							if next_heap.size() < k {
-								next_heap.push(v, i_row);
-							} else if next_heap.peek().unwrap_unchecked().0 > v {
-								next_heap.pop();
-								next_heap.push(v, i_row);
-							}
-						});
-						heap = next_heap;
+						if i_bin == 0 {
+							let next_heap = heap_cache.get_unchecked_mut(0);
+							next_heap.clear();
+							data_bin.axis_iter(Axis(0))
+							.enumerate()
+							.for_each(|(i_row, row)| {
+								let v = row.hamming_dist_same(&q);
+								if next_heap.size() < init_k {
+									next_heap.push(v, i_row);
+								} else if next_heap.peek().unwrap_unchecked().0 > v {
+									next_heap.pop();
+									next_heap.push(v, i_row);
+								}
+							});
+						} else {
+							let (heap_split_l, heap_split_h) = heap_cache.split_at_mut(i_bin);
+							let prev_heap = heap_split_l.get_unchecked_mut(i_bin-1);
+							let next_heap = heap_split_h.get_unchecked_mut(0);
+							next_heap.clear();
+							let prev_heap_size = prev_heap.size();
+							(0..prev_heap_size)
+							.map(|_| prev_heap.pop().unwrap_unchecked())
+							.for_each(|(old_v, i_row)| {
+								let v = old_v + data_bin.row(i_row).hamming_dist_same(&q);
+								if next_heap.size() < k {
+									next_heap.push(v, i_row);
+								} else if next_heap.peek().unwrap_unchecked().0 > v {
+									next_heap.pop();
+									next_heap.push(v, i_row);
+								}
+							});
+						}
 					});
-					heap.into_iter().zip((0..final_k).rev()).for_each(|((dist, idx), i_nn)| {
+					let last_heap = heap_cache.get_unchecked_mut(n_bins-1);
+					let mut i_nn = final_k-1;
+					while last_heap.size() > 0 {
+						let (dist, idx) = last_heap.pop().unwrap_unchecked();
 						*nn_dist.uget_mut(i_nn) = dist;
 						*nn_idx.uget_mut(i_nn) = idx;
-					})
+						i_nn -= 1;
+					}
 				});
 			});
 			(nn_dists, nn_idxs)
 		}
 	}
+
+
+
+	pub fn query<
+		B: HIOBBits,
+		F: HIOBFloat,
+		DF1: Data<Elem=F>+MaybeSync,
+		DF2: Data<Elem=F>+MaybeSync,
+		DB1: Data<Elem=B>+MaybeSync,
+		DB2: Data<Elem=B>+MaybeSync,
+	> (
+		&self,
+		data: &ArrayBase<DF1, Ix2>,
+		data_bin: &ArrayBase<DB1, Ix2>,
+		queries: &ArrayBase<DF2, Ix2>,
+		queries_bin: &ArrayBase<DB2, Ix2>,
+		k: usize,
+		n: usize,
+		chunk_size: Option<usize>,
+	) -> (Array2<F>, Array2<usize>) {
+		self.query_cascade(
+			data,
+			&vec![data_bin.view()],
+			queries,
+			&vec![queries_bin.view()],
+			k,
+			&vec![n],
+			chunk_size
+		)
+	}
+
+
+	pub fn query_cascade<
+		B: HIOBBits,
+		F: HIOBFloat,
+		DF1: Data<Elem=F>+MaybeSync,
+		DF2: Data<Elem=F>+MaybeSync,
+		DB1: Data<Elem=B>+MaybeSync,
+		DB2: Data<Elem=B>+MaybeSync,
+	> (
+		&self,
+		data: &ArrayBase<DF1, Ix2>,
+		data_bins: &Vec<ArrayBase<DB1, Ix2>>,
+		queries: &ArrayBase<DF2, Ix2>,
+		queries_bins: &Vec<ArrayBase<DB2, Ix2>>,
+		k: usize,
+		ns: &Vec<usize>,
+		chunk_size: Option<usize>,
+	) -> (Array2<F>, Array2<usize>) {
+		let chunk_size = chunk_size.unwrap_or(100);
+		unsafe {
+			let n_bins = data_bins.len();
+			let n_queries = queries_bins.get_unchecked(0).shape()[0];
+			let n_chunks = (n_queries + (chunk_size-1)) / chunk_size;
+			let mut nn_dots = Array2::zeros((n_queries, k));
+			let mut nn_idxs = Array2::zeros((n_queries, k));
+			let raw_iter = (0..n_chunks)
+			.zip(nn_dots.axis_chunks_iter_mut(Axis(0), chunk_size))
+			.zip(nn_idxs.axis_chunks_iter_mut(Axis(0), chunk_size));
+			named_par_iter(raw_iter, "Computing neighbors")
+			.map(|((a,b),c)| (a,b,c))
+			.for_each(|(q_id_chunk, mut nn_dot_chunk, mut nn_idx_chunk)| {
+				let mut heap_cache: Vec<MaxHeap<usize,usize>> = ns.iter()
+				.map(|n| {
+					let mut heap = MaxHeap::<usize,usize>::new();
+					heap.reserve(*n);
+					heap
+				})
+				.collect();
+				let mut nn_heap = MinHeap::<F,usize>::new();
+				nn_heap.reserve(k);
+				let start_q_id = q_id_chunk * chunk_size;
+				let end_q_id = ((q_id_chunk+1) * chunk_size).min(n_queries);
+				(start_q_id..end_q_id)
+				.zip(nn_dot_chunk.axis_iter_mut(Axis(0)))
+				.zip(nn_idx_chunk.axis_iter_mut(Axis(0)))
+				.map(|((a,b),c)| (a,b,c))
+				.for_each(|(q_id, mut nn_dot, mut nn_idx)| {
+					/* Populate heaps with shrinking candidate sets */
+					(0..n_bins).for_each(|i_bin| {
+						let q = queries_bins.get_unchecked(i_bin).row(q_id);
+						let n = *ns.get_unchecked(i_bin);
+						let data_bin = data_bins.get_unchecked(i_bin);
+						if i_bin == 0 {
+							let next_heap = heap_cache.get_unchecked_mut(0);
+							next_heap.clear();
+							data_bin.axis_iter(Axis(0))
+							.enumerate()
+							.for_each(|(i_row, row)| {
+								let v = row.hamming_dist_same(&q);
+								if next_heap.size() < n {
+									next_heap.push(v, i_row);
+								} else if next_heap.peek().unwrap_unchecked().0 > v {
+									next_heap.pop();
+									next_heap.push(v, i_row);
+								}
+							});
+						} else {
+							let (heap_split_l, heap_split_h) = heap_cache.split_at_mut(i_bin);
+							let prev_heap = heap_split_l.get_unchecked_mut(i_bin-1);
+							let next_heap = heap_split_h.get_unchecked_mut(0);
+							next_heap.clear();
+							let prev_heap_size = prev_heap.size();
+							(0..prev_heap_size)
+							.map(|_| prev_heap.pop().unwrap_unchecked())
+							.for_each(|(old_v, i_row)| {
+								let v = old_v + data_bin.row(i_row).hamming_dist_same(&q);
+								if next_heap.size() < n {
+									next_heap.push(v, i_row);
+								} else if next_heap.peek().unwrap_unchecked().0 > v {
+									next_heap.pop();
+									next_heap.push(v, i_row);
+								}
+							});
+						}
+					});
+					/* Populate NN heap with brute force calculated neighbors */
+					let last_heap = heap_cache.get_unchecked_mut(n_bins-1);
+					let fq = queries.row(q_id);
+					nn_heap.clear();
+					while last_heap.size() > 0 {
+						let (_, idx) = last_heap.pop().unwrap_unchecked();
+						let v = DotProduct::prod_arrs(&data.row(idx), &fq);
+						if nn_heap.size() < k {
+							nn_heap.push(v, idx);
+						} else if nn_heap.peek().unwrap_unchecked().0 < v {
+							nn_heap.pop();
+							nn_heap.push(v, idx);
+						}
+					}
+					/* Write nearest neighbors into output */
+					let mut i_nn = k-1;
+					while nn_heap.size() > 0 {
+						let (dot, idx) = nn_heap.pop().unwrap_unchecked();
+						*nn_dot.uget_mut(i_nn) = dot;
+						*nn_idx.uget_mut(i_nn) = idx;
+						i_nn -= 1;
+					}
+				});
+			});
+			(nn_dots, nn_idxs)
+		}
+	}
+
 
 }
 

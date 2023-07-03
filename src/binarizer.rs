@@ -1,4 +1,4 @@
-use std::{ops::{Mul, Div, Sub, AddAssign}, f64::consts::PI};
+use std::{ops::{Sub, AddAssign}, f64::consts::PI};
 use std::iter::Sum;
 
 
@@ -6,7 +6,7 @@ use ndarray_rand::rand_distr::{Normal,Distribution};
 use num::{Float};
 #[cfg(feature="rust-hdf5")]
 use hdf5::H5Type;
-use ndarray::{Slice, Axis, Array2, Array1, ArrayBase, Ix1, ScalarOperand, Data, Ix2, ArrayView2, ArrayView1};
+use ndarray::{Slice, Axis, Array2, Array1, ArrayBase, Ix1, Data, Ix2, ArrayView2, ArrayView1};
 use rand::thread_rng;
 // use rand::prelude::*;
 #[cfg(feature="parallel")]
@@ -32,9 +32,9 @@ macro_rules! trait_combiner {
 	};
 }
 #[cfg(feature="rust-hdf5")]
-trait_combiner!(HIOBFloat: CachingNumpyEquivalent+H5Type+Float+Sum+AddAssign+ScalarOperand+MaybeSend+MaybeSync);
+trait_combiner!(HIOBFloat: CachingNumpyEquivalent+H5Type+Float+Sum+AddAssign+MaybeSend+MaybeSync);
 #[cfg(not(feature="rust-hdf5"))]
-trait_combiner!(HIOBFloat: CachingNumpyEquivalent+Float+Sum+AddAssign+ScalarOperand+MaybeSend+MaybeSync);
+trait_combiner!(HIOBFloat: CachingNumpyEquivalent+Float+Sum+AddAssign+MaybeSend+MaybeSync);
 trait_combiner!(HIOBBits: Bits+Clone+MaybeSend+MaybeSync);
 
 pub struct HIOB<F: HIOBFloat, B: HIOBBits> where Array1<B>: BitVectorMut {
@@ -54,7 +54,11 @@ pub struct HIOB<F: HIOBFloat, B: HIOBBits> where Array1<B>: BitVectorMut {
 	update_parallel: bool,
 	displace_parallel: bool,
 	ransac_pairs_per_bit: usize,
-	ransac_sub_sample: usize
+	ransac_sub_sample: usize,
+	pi_half: F,
+	displace_vec_cache: Array1<F>,
+	calc_vec: Array1<F>,
+	centers_calc_cache: Array2<F>,
 }
 impl<F: HIOBFloat, B: HIOBBits> HIOB<F, B> where Array1<B>: BitVectorMut {
 	pub fn new(
@@ -87,6 +91,7 @@ impl<F: HIOBFloat, B: HIOBBits> HIOB<F, B> where Array1<B>: BitVectorMut {
 				Array2::zeros([n_bits, d])
 			}
 		};
+		let centers_calc_cache = centers.view().to_owned();
 		/* Create instance */
 		let mut ret = HIOB {
 			n_data: n,
@@ -106,6 +111,10 @@ impl<F: HIOBFloat, B: HIOBBits> HIOB<F, B> where Array1<B>: BitVectorMut {
 			displace_parallel: false,
 			ransac_pairs_per_bit: ransac_pairs_per_bit.unwrap_or(200),
 			ransac_sub_sample: ransac_sub_sample.unwrap_or(2000),
+			pi_half: F::from(PI).unwrap()/F::from(2).unwrap(),
+			displace_vec_cache: Array1::from_elem((d,), F::zero()),
+			calc_vec: Array1::from_elem((d,),F::zero()),
+			centers_calc_cache: centers_calc_cache,
 		};
 		/* Initialize the instance by computing all entries in the dyn prog matrices */
 		if init_greedy.is_some() && init_greedy.unwrap() {
@@ -161,7 +170,7 @@ impl<F: HIOBFloat, B: HIOBBits> HIOB<F, B> where Array1<B>: BitVectorMut {
 			}
 			let c = self.data.row(p1).sub(&self.data.row(p2));
 			let cn = unsafe {Self::vec_norm(&c)};
-			self.centers.row_mut(i_center).assign(&c.div(cn));
+			self.centers.row_mut(i_center).assign(&c.mapv(|v| v/cn));
 			self.update_bits(i_center);
 		});
 		named_range(self.n_bits, "Initializing overlap array")
@@ -179,9 +188,9 @@ impl<F: HIOBFloat, B: HIOBBits> HIOB<F, B> where Array1<B>: BitVectorMut {
 				let p1 = rand::random::<usize>() % self.n_data;
 				let mut p2 = rand::random::<usize>() % self.n_data;
 				while p1 == p2 { p2 = rand::random::<usize>() % self.n_data; }
-				let c = self.data.row(p1).sub(&self.data.row(p2));
+				let mut c = self.data.row(p1).sub(&self.data.row(p2));
 				let cn = unsafe { Self::vec_norm(&c) };
-				let c = c.div(cn);
+				c.mapv_inplace(|v| v/cn);
 				let mut bit_vec = Array1::from_elem(n_buckets, B::zeros());
 				par_iter(bit_vec.iter_mut().enumerate())
 				.for_each(|(i_item, target)|
@@ -229,19 +238,25 @@ impl<F: HIOBFloat, B: HIOBBits> HIOB<F, B> where Array1<B>: BitVectorMut {
 	fn update_bits(&mut self, i_center: usize) {
 		let c = self.centers.row(i_center);
 		let mut cb = self.data_bins_t.row_mut(i_center);
+		const TOTAL_CHUNKS_LOWER: usize = 200;
+		let n_blocks = (TOTAL_CHUNKS_LOWER+(B::size()-1))/B::size();
 		par_iter(
-			cb.iter_mut()
-			.zip(self.data.axis_chunks_iter(Axis(0), B::size()))
+			cb.axis_chunks_iter_mut(Axis(0), n_blocks)
+			.zip(self.data.axis_chunks_iter(Axis(0), n_blocks*B::size()))
 		)
-		.for_each(|(target, points)| {
-			let mut bits = B::zeros();
-			points.axis_iter(Axis(0))
-			.enumerate()
-			.for_each(|(i_bit, point)| {
-				let bit = DotProduct::prod_arrs(&c, &point) >= F::zero();
-				bits.set_bit_unchecked(i_bit, bit);
+		.for_each(|(mut cb_block, data_block)| {
+			cb_block.iter_mut()
+			.zip(data_block.axis_chunks_iter(Axis(0), B::size()))
+			.for_each(|(target, points)| {
+				let mut bits = B::zeros();
+				points.axis_iter(Axis(0))
+				.enumerate()
+				.for_each(|(i_bit, point)| {
+					let bit = DotProduct::prod_arrs(&c, &point) >= F::zero();
+					bits.set_bit_unchecked(i_bit, bit);
+				});
+				*target = bits;
 			});
-			*target = bits;
 		});
 	}
 	fn update_overlaps(&mut self, i_center: usize) {
@@ -273,22 +288,58 @@ impl<F: HIOBFloat, B: HIOBBits> HIOB<F, B> where Array1<B>: BitVectorMut {
 		});
 	}
 
+	#[inline(always)]
 	unsafe fn vec_norm<D: Data<Elem=F>>(vec: &ArrayBase<D, Ix1>) -> F {
 		vec.iter().map(|&v| v*v).reduce(|a,b| a+b).unwrap_unchecked().sqrt()
 	}
+	#[inline]
 	fn displacement_vec(&self, i_center: usize, j_center: usize) -> Array1<F> {
 		let frac_equal = unsafe { 
 			F::from(*self.overlap_mat.uget([i_center,j_center])).unwrap_unchecked()
 			/ F::from(self.n_data).unwrap_unchecked()
 		};
 		let frac_unequal = F::one() - frac_equal;
-		let rot_angle = unsafe { ((frac_equal-frac_unequal)/F::from(2).unwrap_unchecked())*F::from(PI).unwrap_unchecked() };
+		let rot_angle = (frac_equal-frac_unequal)*self.pi_half;
+		let factor = rot_angle.mul(self.scale).tan();
 		let ci = self.centers.row(i_center);
 		let cj = self.centers.row(j_center);
-		let displacement_vec = ci.mul(ci.dot(&cj)) - cj;
+		let prod = DotProduct::prod_arrs(&ci, &cj);
+		let mut displacement_vec: Array1<F> = ci.iter().zip(cj.iter())
+		.map(|(v1,v2)| *v1 * prod - *v2)
+		.collect();
 		let norm = unsafe { HIOB::vec_norm(&displacement_vec) };
-		let displacement_vec = displacement_vec.div(norm);
-		displacement_vec.mul(rot_angle.mul(self.scale).tan())
+		let factor = factor/norm;
+		displacement_vec.mapv_inplace(|v| v*factor);
+		displacement_vec
+	}
+	#[inline]
+	fn displacement_vec_in_cache(&mut self, i_center: usize, j_center: usize) {
+		let frac_equal = unsafe { 
+			F::from(*self.overlap_mat.uget([i_center,j_center])).unwrap_unchecked()
+			/ F::from(self.n_data).unwrap_unchecked()
+		};
+		let frac_unequal = F::one() - frac_equal;
+		let rot_angle = (frac_equal-frac_unequal)*self.pi_half;
+		let factor = rot_angle.mul(self.scale).tan();
+		let ci = self.centers.row(i_center);
+		let cj = self.centers.row(j_center);
+		let prod = DotProduct::prod_arrs(&ci, &cj);
+		self.calc_vec.iter_mut()
+		.zip(ci.iter().zip(cj.iter()))
+		.for_each(|(target,(v1,v2))| *target = *v1 * prod - *v2);
+		let norm = unsafe { HIOB::vec_norm(&self.calc_vec) };
+		let factor = factor/norm;
+		self.calc_vec.mapv_inplace(|v| v*factor);
+	}
+	#[inline]
+	fn agg_displacement_vec_in_cache(&mut self, i_center: usize, j_centers: Vec<usize>) {
+		self.displace_vec_cache.fill(F::zero());
+		j_centers.iter()
+		.filter(|&j_center| i_center != *j_center)
+		.for_each(|j_center| {
+			self.displacement_vec_in_cache(i_center, *j_center);
+			self.displace_vec_cache.add_assign(&self.calc_vec);
+		});
 	}
 
 	pub fn step(&mut self) {
@@ -297,26 +348,21 @@ impl<F: HIOBFloat, B: HIOBBits> HIOB<F, B> where Array1<B>: BitVectorMut {
 		} else {
 			(0..self.n_bits).collect()
 		};
-		let mut new_centers: Array2<F> = Array2::zeros((mis.len(), self.n_dims));
-		mis.iter().zip(new_centers.axis_iter_mut(Axis(0))).for_each(|(&mi, mut new_center)| {
+		mis.iter()
+		.for_each(|&mi| {
 			let mjs = if !self.displace_parallel {
 				unsafe { vec![_argmax1(&self.sim_mat.row(mi))] }
 			} else {
 				(0..self.n_bits).collect()
 			};
-			let total_displacement = unsafe {
-				mjs.iter()
-				.filter(|&mj| mi != *mj)
-				.map(|mj| self.displacement_vec(mi, *mj))
-				.reduce(|u,v| u+v)
-				.unwrap_unchecked()
-			};
-			new_center.assign(&(total_displacement + self.centers.row(mi)));
-			let norm = unsafe { HIOB::vec_norm(&new_center) };
-			new_center.assign(&new_center.div(norm));
+			self.agg_displacement_vec_in_cache(mi, mjs);
+			let mut row = self.centers_calc_cache.row_mut(mi);
+			row.add_assign(&self.displace_vec_cache);
+			let norm = unsafe { HIOB::vec_norm(&row) };
+			row.mapv_inplace(|v| v/norm);
 		});
-		mis.iter().zip(new_centers.axis_iter(Axis(0))).for_each(|(&mi, new_center)| {
-			self.centers.row_mut(mi).assign(&new_center);
+		std::mem::swap(&mut self.centers, &mut self.centers_calc_cache);
+		mis.iter().for_each(|&mi| {
 			self.update_bits(mi);
 			self.update_overlaps(mi);
 		});

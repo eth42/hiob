@@ -28,18 +28,31 @@ pub trait Bits: Clone+Copy+MaybeSend+MaybeSync {
 }
 
 impl Bits for bool {
+	#[inline(always)]
 	fn size() -> usize { 1 }
+	#[inline(always)]
 	fn get_bit_unchecked(&self, _i: usize) -> bool { *self }
+	#[inline(always)]
 	fn set_bit_unchecked(&mut self, _i: usize, b: bool) { *self = b }
+	#[inline(always)]
 	fn count_bits(&self) -> usize { if *self {1} else {0} }
+	#[inline(always)]
 	fn count_bits_range_unchecked(&self, _lo: usize, _hi: usize) -> usize { if *self {1} else {0} }
+	#[inline(always)]
 	fn zeros() -> Self { false }
+	#[inline(always)]
 	fn ones() -> Self { true }
+	#[inline(always)]
 	fn hamming_dist(&self, other: &Self) -> usize { if self != other { 1 } else { 0 } }
+	#[inline(always)]
 	fn dot_prod(&self, other: &Self) -> usize { if self & other { 1 } else { 0 } }
+	#[inline(always)]
 	fn or(&self, other: &Self) -> Self { self | other }
+	#[inline(always)]
 	fn and(&self, other: &Self) -> Self {self & other }
+	#[inline(always)]
 	fn xor(&self, other: &Self) -> Self {self ^ other }
+	#[inline(always)]
 	fn not(&self) -> Self { !self }
 }
 
@@ -66,27 +79,40 @@ macro_rules! int_bits {
 			}
 		}
 		impl Bits for $itype {
+			#[inline(always)]
 			fn size() -> usize { $n_bits }
+			#[inline(always)]
 			fn get_bit_unchecked(&self, i: usize) -> bool { unsafe { (self & Self::BIT_MASKS.get_unchecked(i)) > 0 } }
+			#[inline(always)]
 			fn set_bit_unchecked(&mut self, i: usize, b: bool) {
 				unsafe {
 					if b { *self |= Self::BIT_MASKS.get_unchecked(i); }
 					else { *self &= Self::INV_BIT_MASKS.get_unchecked(i); }
 				}
 			}
+			#[inline(always)]
 			fn count_bits(&self) -> usize {
 				self.count_ones() as usize
 			}
+			#[inline(always)]
 			fn count_bits_range_unchecked(&self, lo: usize, hi: usize) -> usize {
 				((self >> lo) << (lo+$n_bits-hi)).count_ones() as usize
 			}
+			#[inline(always)]
 			fn zeros() -> Self { 0 as $itype }
+			#[inline(always)]
 			fn ones() -> Self { Self::BIT_MASKS.iter().sum() }
+			#[inline(always)]
 			fn hamming_dist(&self, other: &Self) -> usize { (self ^ other).count_ones() as usize }
+			#[inline(always)]
 			fn dot_prod(&self, other: &Self) -> usize { (self & other).count_ones() as usize }
+			#[inline(always)]
 			fn or(&self, other: &Self) -> Self { self | other }
+			#[inline(always)]
 			fn and(&self, other: &Self) -> Self { self & other }
+			#[inline(always)]
 			fn xor(&self, other: &Self) -> Self { self ^ other }
+			#[inline(always)]
 			fn not(&self) -> Self { self ^ Self::ones() }
 		}
 	};
