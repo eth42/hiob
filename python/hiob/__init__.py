@@ -5,6 +5,7 @@ import numpy as np
 def _float_type_name(float_type):
 		if float_type == np.float32: return "f32"
 		elif float_type == np.float64: return "f64"
+		elif float_type == np.float16 and supports_f16(): return "f16"
 		else: raise ValueError("Unsupported type '{:}'.".format(float_type))
 def _bits_type_name(bits_type):
 		if bits_type == bool: return "bool"
@@ -287,8 +288,10 @@ class BinarizationEvaluator:
 		return fun(data_bin, queries_bin, hamming_ids, k, chunk_size)
 	def query(self, data, data_bin, queries, queries_bin, k, n, chunk_size=None):
 		assert k <= n
-		_, candidate_ids = self.brute_force_k_smallest_hamming(data_bin, queries_bin, n)
-		return self.refine(data, queries, candidate_ids, k, chunk_size)
+		data, queries, ftype_name = self._clean_float_input(data, queries)
+		data_bin, queries_bin, btype_name = self._clean_bin_input(data_bin, queries_bin)
+		fun = getattr(self._raw, "query_{:}_{:}".format(ftype_name, btype_name))
+		return fun(data, data_bin, queries, queries_bin, k, n, chunk_size)
 	def query_h5(self, data_file, data_dataset, data_bin, queries, queries_bin, k, n, chunk_size=None):
 		assert k <= n
 		_, candidate_ids = self.brute_force_k_smallest_hamming(data_bin, queries_bin, n)
@@ -297,6 +300,7 @@ class BinarizationEvaluator:
 		assert len(data_bins) > 0
 		assert len(data_bins) == len(queries_bins)
 		assert len(data_bins) == len(ns)
+		data, queries, ftype_name = self._clean_float_input(data, queries)
 		btype_name = None
 		cleaned_data_bins = []
 		cleaned_queries_bins = []
@@ -306,9 +310,8 @@ class BinarizationEvaluator:
 			elif btype_name != local_btype_name: raise ValueError("All binarizations must have the same data type (received '{:}' and '{:}').".format(btype_name, local_btype_name))
 			cleaned_data_bins.append(data_bin)
 			cleaned_queries_bins.append(queries_bin)
-		fun = getattr(self._raw, "cascading_k_smallest_hamming_{:}".format(btype_name))
-		_, candidate_ids = fun(cleaned_data_bins, cleaned_queries_bins, ns)
-		return self.refine(data, queries, candidate_ids, k, chunk_size)
+		fun = getattr(self._raw, "query_cascade_{:}_{:}".format(ftype_name, btype_name))
+		return fun(data, cleaned_data_bins, queries, cleaned_queries_bins, k, ns, chunk_size)
 	def query_cascade_h5(self, data_file: str, data_dataset: str, data_bins, queries, queries_bins, k, ns, chunk_size=None):
 		assert len(data_bins) > 0
 		assert len(data_bins) == len(queries_bins)
