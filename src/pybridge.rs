@@ -3,10 +3,7 @@ use numpy::{PyArray1,PyArray2,PyReadonlyArray1,PyReadonlyArray2,ToPyArray};
 use num::NumCast;
 use paste::paste;
 use ndarray::{Array2,OwnedRepr};
-#[cfg(feature="parallel")]
-use {rayon::ThreadPoolBuilder, pyo3::exceptions::PyValueError};
-#[cfg(not(feature="parallel"))]
-use pyo3::exceptions::{PyValueError, PyWarning};
+use {pyo3::exceptions::PyValueError};
 #[cfg(feature="half")]
 use half::f16;
 
@@ -784,31 +781,22 @@ macro_rules! thx_python_export {
 
 #[pyfunction]
 pub fn limit_threads(_num_threads: usize) -> Result<(), PyErr> {
-	#[cfg(feature="parallel")]
-	{
-		let result = ThreadPoolBuilder::new().num_threads(_num_threads).build_global();
-		if result.is_ok() {
-			Ok(())
-		} else {
-			Err(PyErr::new::<PyValueError,_>(result.err().unwrap().to_string()))
-		}
+	let result = crate::limit_threads(_num_threads);
+	if result.is_ok() {
+		Ok(())
+	} else {
+		Err(PyErr::new::<PyValueError,_>(result.err().unwrap().to_string()))
 	}
-	#[cfg(not(feature="parallel"))]
-	Err(PyErr::new::<PyWarning,_>("Number of threads could not be set, because this package was built without multi-threading."))
 }
 
 #[pyfunction]
 pub fn num_threads() -> PyResult<usize> {
-	Ok(rayon::current_num_threads())
+	Ok(crate::num_threads())
 }
 
 #[pyfunction]
 pub fn supports_f16() -> PyResult<bool> {
-	#[cfg(feature="half")]
-	let result = true;
-	#[cfg(not(feature="half"))]
-	let result = false;
-	Ok(result)
+	Ok(crate::supports_f16())
 }
 
 
