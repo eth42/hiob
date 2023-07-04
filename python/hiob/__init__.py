@@ -116,6 +116,7 @@ class StochasticHIOB:
 		ransac_sub_sample: int = None,
 		update_parallel: bool = None,
 		displace_parallel: bool = None,
+		noise_std: float = None,
 	):
 		if n_bits < 1:
 			raise ValueError("The number of bits should be at least 1.")
@@ -140,6 +141,7 @@ class StochasticHIOB:
 			init_ransac,
 			ransac_pairs_per_bit,
 			ransac_sub_sample,
+			noise_std,
 		)
 		self._post_constructor_init(specific_type, update_parallel, displace_parallel)
 		return self
@@ -294,8 +296,10 @@ class BinarizationEvaluator:
 		return fun(data, data_bin, queries, queries_bin, k, n, chunk_size)
 	def query_h5(self, data_file, data_dataset, data_bin, queries, queries_bin, k, n, chunk_size=None):
 		assert k <= n
-		_, candidate_ids = self.brute_force_k_smallest_hamming(data_bin, queries_bin, n)
-		return self.refine_h5(data_file, data_dataset, queries, candidate_ids, k, chunk_size)
+		ftype_name = _float_type_name(queries.dtype)
+		data_bin, queries_bin, btype_name = self._clean_bin_input(data_bin, queries_bin)
+		fun = getattr(self._raw, "query_h5_{:}_{:}".format(ftype_name, btype_name))
+		return fun(data_file, data_dataset, data_bin, queries, queries_bin, k, n, chunk_size)
 	def query_cascade(self, data, data_bins, queries, queries_bins, k, ns, chunk_size=None):
 		assert len(data_bins) > 0
 		assert len(data_bins) == len(queries_bins)
@@ -316,6 +320,7 @@ class BinarizationEvaluator:
 		assert len(data_bins) > 0
 		assert len(data_bins) == len(queries_bins)
 		assert len(data_bins) == len(ns)
+		ftype_name = _float_type_name(queries.dtype)
 		btype_name = None
 		cleaned_data_bins = []
 		cleaned_queries_bins = []
@@ -325,9 +330,8 @@ class BinarizationEvaluator:
 			elif btype_name != local_btype_name: raise ValueError("All binarizations must have the same data type (received '{:}' and '{:}').".format(btype_name, local_btype_name))
 			cleaned_data_bins.append(data_bin)
 			cleaned_queries_bins.append(queries_bin)
-		fun = getattr(self._raw, "cascading_k_smallest_hamming_{:}".format(btype_name))
-		_, candidate_ids = fun(cleaned_data_bins, cleaned_queries_bins, ns)
-		return self.refine_h5(data_file, data_dataset, queries, candidate_ids, k, chunk_size)
+		fun = getattr(self._raw, "query_cascade_h5_{:}_{:}".format(ftype_name, btype_name))
+		return fun(data_file, data_dataset, cleaned_data_bins, queries, cleaned_queries_bins, k, ns, chunk_size)
 
 class THX:
 	def __init__(

@@ -658,6 +658,56 @@ macro_rules! eval_fun_gen_pb {
 					);
 					(dots.to_pyarray(py), idx.to_pyarray(py))
 				}
+				pub fn [<query_h5_ $prec_type _ $bin_type>]<'py>(
+					&self,
+					py: Python<'py>,
+					file: String,
+					dataset: String,
+					data_bin: PyReadonlyArray2<$bin_type>,
+					queries: PyReadonlyArray2<$prec_type>,
+					queries_bin: PyReadonlyArray2<$bin_type>,
+					k: usize,
+					n: usize,
+					chunk_size: Option<usize>,
+				) -> (&'py PyArray2<$prec_type>, &'py PyArray2<usize>) {
+					let (dots, idx) = self.bin_eval.query_h5(
+						file.as_str(),
+						dataset.as_str(),
+						&data_bin.as_array(),
+						&queries.as_array(),
+						&queries_bin.as_array(),
+						k,
+						n,
+						chunk_size,
+					);
+					(dots.to_pyarray(py), idx.to_pyarray(py))
+				}
+				pub fn [<query_cascade_h5_ $prec_type _ $bin_type>]<'py>(
+					&self,
+					py: Python<'py>,
+					file: String,
+					dataset: String,
+					data_bins: Vec<PyReadonlyArray2<$bin_type>>,
+					queries: PyReadonlyArray2<$prec_type>,
+					queries_bins: Vec<PyReadonlyArray2<$bin_type>>,
+					k: usize,
+					ns: Vec<usize>,
+					chunk_size: Option<usize>,
+				) -> (&'py PyArray2<$prec_type>, &'py PyArray2<usize>) {
+					let data_bins: Vec<_> = (0..data_bins.len()).map(|i| data_bins[i].as_array()).collect();
+					let queries_bins: Vec<_> = (0..queries_bins.len()).map(|i| queries_bins[i].as_array()).collect();
+					let (dots, idx) = self.bin_eval.query_cascade_h5(
+						file.as_str(),
+						dataset.as_str(),
+						&data_bins,
+						&queries.as_array(),
+						&queries_bins,
+						k,
+						&ns,
+						chunk_size,
+					);
+					(dots.to_pyarray(py), idx.to_pyarray(py))
+				}
 			}
 		}
 	}
@@ -762,6 +812,11 @@ pub fn limit_threads(_num_threads: usize) -> Result<(), PyErr> {
 }
 
 #[pyfunction]
+pub fn num_threads() -> PyResult<usize> {
+	Ok(rayon::current_num_threads())
+}
+
+#[pyfunction]
 pub fn supports_f16() -> PyResult<bool> {
 	#[cfg(feature="half")]
 	let result = true;
@@ -786,6 +841,7 @@ fn hiob(_py: Python, m: &PyModule) -> PyResult<()> {
 	thx_python_export!(m, (bool, u8, u16, u32, u64), (2,3,4,5,6,7,8,9,10));
 	m.add_class::<RawBinarizationEvaluator>()?;
 	m.add_wrapped(wrap_pyfunction!(limit_threads))?;
+	m.add_wrapped(wrap_pyfunction!(num_threads))?;
 	m.add_wrapped(wrap_pyfunction!(supports_f16))?;
 	Ok(())
 }

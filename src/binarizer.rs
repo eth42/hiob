@@ -19,7 +19,7 @@ use crate::{
 };
 use crate::float_vectors::{DotProduct, InnerProduct};
 use crate::bits::{Bits};
-use crate::progress::{named_range, named_par_iter, par_iter, MaybeSend, MaybeSync};
+use crate::progress::{named_range, par_iter, MaybeSend, MaybeSync};
 
 macro_rules! trait_combiner {
 	($combination_name: ident) => {
@@ -238,6 +238,10 @@ impl<F: HIOBFloat, B: HIOBBits> HIOB<F, B> where Array1<B>: BitVectorMut {
 	fn update_bits(&mut self, i_center: usize) {
 		let c = self.centers.row(i_center);
 		let mut cb = self.data_bins_t.row_mut(i_center);
+		#[cfg(feature="parallel")]
+		#[allow(non_snake_case)]
+		let TOTAL_CHUNKS_LOWER: usize = cb.shape()[0] / rayon::current_num_threads();
+		#[cfg(not(feature="parallel"))]
 		const TOTAL_CHUNKS_LOWER: usize = 200;
 		let n_blocks = (TOTAL_CHUNKS_LOWER+(B::size()-1))/B::size();
 		par_iter(
@@ -387,22 +391,25 @@ impl<F: HIOBFloat, B: HIOBBits> HIOB<F, B> where Array1<B>: BitVectorMut {
 	pub fn binarize<D: Data<Elem=F>+MaybeSync>(&self, queries: &ArrayBase<D, Ix2>) -> Array2<B> {
 		let n_queries = queries.shape()[0];
 		let mut bins = Array2::from_elem([n_queries, self.data_bin_length], B::zeros());
-		let raw_iter = bins.axis_iter_mut(Axis(0)).zip(queries.axis_iter(Axis(0)));
-		named_par_iter(raw_iter, "Binarizing queries")
-		.for_each(|(mut bins_row, query)| {
-			bins_row.iter_mut().zip(self.centers.axis_chunks_iter(Axis(0), B::size()))
-			.for_each(|(b, lcenters)| {
-				lcenters.axis_iter(Axis(0)).enumerate()
-				.for_each(|(i_bit, center)| {
-					let bit = DotProduct::prod_arrs(&query, &center) >= F::zero();
-					b.set_bit(i_bit, bit);
+		#[cfg(feature="parallel")]
+		#[allow(non_snake_case)]
+		let CHUNK_SIZE: usize = queries.shape()[0] / rayon::current_num_threads();
+		#[cfg(not(feature="parallel"))]
+		const CHUNK_SIZE: usize = 10;
+		let raw_iter = bins.axis_chunks_iter_mut(Axis(0), CHUNK_SIZE).zip(queries.axis_chunks_iter(Axis(0), CHUNK_SIZE));
+		par_iter(raw_iter)
+		.for_each(|(mut bins_row_chunk, query_chunk)| {
+			bins_row_chunk.axis_iter_mut(Axis(0)).zip(query_chunk.axis_iter(Axis(0)))
+			.for_each(|(mut bins_row, query)| {
+				bins_row.iter_mut().zip(self.centers.axis_chunks_iter(Axis(0), B::size()))
+				.for_each(|(b, lcenters)| {
+					lcenters.axis_iter(Axis(0)).enumerate()
+					.for_each(|(i_bit, center)| {
+						let bit = DotProduct::prod_arrs(&query, &center) >= F::zero();
+						b.set_bit(i_bit, bit);
+					});
 				});
 			});
-			// self.product.prods(&query, &self.centers)
-			// .into_iter()
-			// .map(|v| v>=F::zero())
-			// .enumerate()
-			// .for_each(|(j,b)| bins_row.set_bit_unchecked(j, b));
 		});
 		bins
 	}
@@ -483,7 +490,7 @@ impl<F: HIOBFloat, B: HIOBBits, D: MatrixDataSource<F>> StochasticHIOB<F,B,D> wh
 	) -> Self {
 		let scale = scale.unwrap_or(F::one());
 		let mut perm_gen = RandomPermutationGenerator::new(data_source.n_rows(), perm_gen_rounds.unwrap_or(4));
-		let mut initial_data = data_source.get_rows(perm_gen.next_usizes(sample_size));
+		let mut initial_data = data_source.get_rows(&perm_gen.next_usizes(sample_size));
 		if noise_std.is_some() {
 			let mut rng = thread_rng();
 			let normal: Normal<f64> = Normal::new(
@@ -514,7 +521,7 @@ impl<F: HIOBFloat, B: HIOBBits, D: MatrixDataSource<F>> StochasticHIOB<F,B,D> wh
 
 	pub fn step(&mut self) {
 		if self.current_it >= self.its_per_sample {
-			let mut new_sample = self.data_source.get_rows(self.perm_gen.next_usizes(self.sample_size));
+			let mut new_sample = self.data_source.get_rows(&self.perm_gen.next_usizes(self.sample_size));
 			if self.noise_std.is_some() {
 				let mut rng = thread_rng();
 				let normal: Normal<f64> = Normal::new(

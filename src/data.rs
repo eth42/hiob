@@ -19,7 +19,7 @@ pub trait MatrixDataSource<T> {
 	fn n_rows(&self) -> usize;
 	fn n_cols(&self) -> usize;
 	fn get_row(&self, i_row: usize) -> Array1<T>;
-	fn get_rows(&self, i_rows: Vec<usize>) -> Array2<T>;
+	fn get_rows(&self, i_rows: &Vec<usize>) -> Array2<T>;
 	fn get_rows_slice(&self, i_row_from: usize, i_row_to: usize) -> Array2<T>;
 }
 pub trait AsyncMatrixDataSource<T>: MatrixDataSource<T> {
@@ -38,7 +38,7 @@ impl<T: Copy+Clone, D: Data<Elem=T>> MatrixDataSource<T> for ArrayBase<D, Ix2> {
 	fn get_row(&self, i_row: usize) -> Array1<T> {
 		self.row(i_row).into_owned()
 	}
-	fn get_rows(&self, i_rows: Vec<usize>) -> Array2<T> {
+	fn get_rows(&self, i_rows: &Vec<usize>) -> Array2<T> {
 		Array2::from_shape_fn(
 			(i_rows.len(), self.n_cols()),
 			|(i,j)| self[[i_rows[i], j]]
@@ -173,7 +173,7 @@ impl<T: NumpyEquivalent> MatrixDataSource<T> for H5PyDataset<T> {
 		});
 		row.unwrap()
 	}
-	fn get_rows(&self, i_rows: Vec<usize>) -> Array2<T> {
+	fn get_rows(&self, i_rows: &Vec<usize>) -> Array2<T> {
 		let row: Result<_,pyo3::PyErr> = pyo3::Python::with_gil(|py| {
 			let locals = pyo3::types::PyDict::new(py);
 			locals.set_item("h5py", py.import("h5py")?)?;
@@ -245,7 +245,7 @@ impl<T: CachingNumpyEquivalent> CachingH5PyReader<T> {
 	}
 	async fn load_rows(file_name: String, dataset_name: String, idx: Vec<usize>) -> Array2<T> {
 		let data = H5PyDataset::<T>::new(file_name.as_str(), dataset_name.as_str());
-		data.get_rows(idx)
+		data.get_rows(&idx)
 	}
 	async fn load_rows_slice(file_name: String, dataset_name: String, start: usize, end: usize) -> Array2<T> {
 		let data = H5PyDataset::<T>::new(file_name.as_str(), dataset_name.as_str());
@@ -262,7 +262,7 @@ impl<T: CachingNumpyEquivalent> MatrixDataSource<T> for CachingH5PyReader<T> {
 	fn get_row(&self, i_row: usize) -> Array1<T> {
 		self.dataset.get_row(i_row)
 	}
-	fn get_rows(&self, i_rows: Vec<usize>) -> Array2<T> {
+	fn get_rows(&self, i_rows: &Vec<usize>) -> Array2<T> {
 		self.dataset.get_rows(i_rows)
 	}
 	fn get_rows_slice(&self, i_row_from: usize, i_row_to: usize) -> Array2<T> {
