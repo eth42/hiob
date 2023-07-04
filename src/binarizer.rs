@@ -6,7 +6,7 @@ use ndarray_rand::rand_distr::{Normal,Distribution};
 use num::{Float};
 #[cfg(feature="rust-hdf5")]
 use hdf5::H5Type;
-use ndarray::{Slice, Axis, Array2, Array1, ArrayBase, Ix1, Data, Ix2, ArrayView2, ArrayView1};
+use ndarray::{Axis, Array2, Array1, ArrayBase, Ix1, Data, Ix2, ArrayView2, ArrayView1};
 use rand::thread_rng;
 // use rand::prelude::*;
 #[cfg(feature="parallel")]
@@ -15,13 +15,17 @@ use rayon::iter::{ParallelIterator};
 use crate::{
 	bit_vectors::{BitVector, BitVectorMut},
 	random::RandomPermutationGenerator,
-	data::{MatrixDataSource, AsyncMatrixDataSource}
+	data::{MatrixDataSource},
 };
 use crate::float_vectors::{DotProduct, InnerProduct};
 use crate::bits::{Bits};
 use crate::progress::{named_range, par_iter, MaybeSend, MaybeSync};
 #[cfg(feature="python")]
-use crate::pydata::{CachingH5PyReader, CachingNumpyEquivalent};
+use crate::{
+	pydata::{CachingH5PyReader, CachingNumpyEquivalent},
+	data::{AsyncMatrixDataSource},
+	ndarray::{Slice},
+};
 
 macro_rules! trait_combiner {
 	($combination_name: ident) => {
@@ -565,6 +569,7 @@ impl<F: HIOBFloat, B: HIOBBits, D: MatrixDataSource<F>> StochasticHIOB<F,B,D> wh
 		self.wrapped_hiob.binarize(queries)
 	}
 
+	#[cfg(feature="python")]
 	pub fn binarize_h5(&self, file: &str, dataset: &str, batch_size: usize) -> Result<Array2<B>, std::fmt::Error> {
 		self.wrapped_hiob.binarize_h5(file, dataset, batch_size)
 	}

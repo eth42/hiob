@@ -6,7 +6,7 @@ edition = "2021"
 
 [lib]
 name = "hiob"
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "lib"]
 path = "src/lib.rs"
 test = true
 doc = true

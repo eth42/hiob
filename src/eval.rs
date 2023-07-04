@@ -528,6 +528,7 @@ impl BinarizationEvaluator {
 		}
 	}
 
+	#[cfg(feature="python")]
 	pub fn query_h5<
 		B: HIOBBits,
 		F: HIOBFloat,
