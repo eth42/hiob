@@ -15,11 +15,13 @@ use rayon::iter::{ParallelIterator};
 use crate::{
 	bit_vectors::{BitVector, BitVectorMut},
 	random::RandomPermutationGenerator,
-	data::{MatrixDataSource, AsyncMatrixDataSource, CachingH5PyReader, CachingNumpyEquivalent}
+	data::{MatrixDataSource, AsyncMatrixDataSource}
 };
 use crate::float_vectors::{DotProduct, InnerProduct};
 use crate::bits::{Bits};
 use crate::progress::{named_range, par_iter, MaybeSend, MaybeSync};
+#[cfg(feature="python")]
+use crate::pydata::{CachingH5PyReader, CachingNumpyEquivalent};
 
 macro_rules! trait_combiner {
 	($combination_name: ident) => {
@@ -32,9 +34,17 @@ macro_rules! trait_combiner {
 	};
 }
 #[cfg(feature="rust-hdf5")]
+#[cfg(feature="python")]
 trait_combiner!(HIOBFloat: CachingNumpyEquivalent+H5Type+Float+Sum+AddAssign+MaybeSend+MaybeSync);
+#[cfg(feature="rust-hdf5")]
+#[cfg(not(feature="python"))]
+trait_combiner!(HIOBFloat: H5Type+Float+Sum+AddAssign+MaybeSend+MaybeSync);
 #[cfg(not(feature="rust-hdf5"))]
+#[cfg(feature="python")]
 trait_combiner!(HIOBFloat: CachingNumpyEquivalent+Float+Sum+AddAssign+MaybeSend+MaybeSync);
+#[cfg(not(feature="rust-hdf5"))]
+#[cfg(not(feature="python"))]
+trait_combiner!(HIOBFloat: Float+Sum+AddAssign+MaybeSend+MaybeSync);
 trait_combiner!(HIOBBits: Bits+Clone+MaybeSend+MaybeSync);
 
 pub struct HIOB<F: HIOBFloat, B: HIOBBits> where Array1<B>: BitVectorMut {
@@ -296,26 +306,26 @@ impl<F: HIOBFloat, B: HIOBBits> HIOB<F, B> where Array1<B>: BitVectorMut {
 	unsafe fn vec_norm<D: Data<Elem=F>>(vec: &ArrayBase<D, Ix1>) -> F {
 		vec.iter().map(|&v| v*v).reduce(|a,b| a+b).unwrap_unchecked().sqrt()
 	}
-	#[inline]
-	fn displacement_vec(&self, i_center: usize, j_center: usize) -> Array1<F> {
-		let frac_equal = unsafe { 
-			F::from(*self.overlap_mat.uget([i_center,j_center])).unwrap_unchecked()
-			/ F::from(self.n_data).unwrap_unchecked()
-		};
-		let frac_unequal = F::one() - frac_equal;
-		let rot_angle = (frac_equal-frac_unequal)*self.pi_half;
-		let factor = rot_angle.mul(self.scale).tan();
-		let ci = self.centers.row(i_center);
-		let cj = self.centers.row(j_center);
-		let prod = DotProduct::prod_arrs(&ci, &cj);
-		let mut displacement_vec: Array1<F> = ci.iter().zip(cj.iter())
-		.map(|(v1,v2)| *v1 * prod - *v2)
-		.collect();
-		let norm = unsafe { HIOB::vec_norm(&displacement_vec) };
-		let factor = factor/norm;
-		displacement_vec.mapv_inplace(|v| v*factor);
-		displacement_vec
-	}
+	// #[inline]
+	// fn displacement_vec(&self, i_center: usize, j_center: usize) -> Array1<F> {
+	// 	let frac_equal = unsafe { 
+	// 		F::from(*self.overlap_mat.uget([i_center,j_center])).unwrap_unchecked()
+	// 		/ F::from(self.n_data).unwrap_unchecked()
+	// 	};
+	// 	let frac_unequal = F::one() - frac_equal;
+	// 	let rot_angle = (frac_equal-frac_unequal)*self.pi_half;
+	// 	let factor = rot_angle.mul(self.scale).tan();
+	// 	let ci = self.centers.row(i_center);
+	// 	let cj = self.centers.row(j_center);
+	// 	let prod = DotProduct::prod_arrs(&ci, &cj);
+	// 	let mut displacement_vec: Array1<F> = ci.iter().zip(cj.iter())
+	// 	.map(|(v1,v2)| *v1 * prod - *v2)
+	// 	.collect();
+	// 	let norm = unsafe { HIOB::vec_norm(&displacement_vec) };
+	// 	let factor = factor/norm;
+	// 	displacement_vec.mapv_inplace(|v| v*factor);
+	// 	displacement_vec
+	// }
 	#[inline]
 	fn displacement_vec_in_cache(&mut self, i_center: usize, j_center: usize) {
 		let frac_equal = unsafe { 
@@ -414,6 +424,7 @@ impl<F: HIOBFloat, B: HIOBBits> HIOB<F, B> where Array1<B>: BitVectorMut {
 		bins
 	}
 	
+	#[cfg(feature="python")]
 	pub fn binarize_h5(&self, file: &str, dataset: &str, batch_size: usize) -> Result<Array2<B>, std::fmt::Error> {
 		// let data_source = read_h5_dataset(file, dataset)?;
 		let mut cached_source = CachingH5PyReader::new(file.to_string(), dataset.to_string());

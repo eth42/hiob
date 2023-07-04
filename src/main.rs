@@ -12,6 +12,8 @@ mod index;
 mod heaps;
 mod random;
 mod data;
+#[cfg(feature="python")]
+mod pydata;
 
 use {
 	ndarray::{Axis, Array, Array2},
@@ -22,14 +24,16 @@ use {
 
 #[allow(unused)]
 fn main() {
+	#[cfg(feature="python")]
 	manual_benchmark();
 }
 
 
 #[allow(dead_code)]
+#[cfg(feature="python")]
 fn manual_benchmark() {
   use std::ops::{DivAssign};
-	use data::H5PyDataset;
+	use pydata::H5PyDataset;
 	use crate::data::MatrixDataSource;
 	use crate::binarizer::StochasticHIOB;
 	let data_file = "pytest/sisap23challenge/data/clip768v2/300K/dataset.h5";

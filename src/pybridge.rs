@@ -1,6 +1,3 @@
-#![allow(dead_code)]
-
-
 use pyo3::prelude::*;
 use numpy::{PyArray1,PyArray2,PyReadonlyArray1,PyReadonlyArray2,ToPyArray};
 use num::NumCast;
@@ -13,19 +10,8 @@ use pyo3::exceptions::{PyValueError, PyWarning};
 #[cfg(feature="half")]
 use half::f16;
 
-mod bit_vectors;
-mod float_vectors;
-mod binarizer;
-mod bits;
-mod progress;
-mod eval;
-mod index;
-mod heaps;
-mod random;
-mod data;
-
 use crate::binarizer::{HIOB,StochasticHIOB};
-use crate::data::{H5PyDataset};
+use crate::pydata::H5PyDataset;
 use crate::eval::BinarizationEvaluator;
 use crate::bit_vectors::BitVector;
 use crate::index::THX;

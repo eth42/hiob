@@ -8,11 +8,13 @@ use crate::binarizer::{HIOBFloat, HIOBBits};
 // use crate::bits::{Bits};
 use crate::bit_vectors::{BitVector};
 use crate::bits::Bits;
-use crate::data::{MatrixDataSource, H5PyDataset};
+use crate::data::{MatrixDataSource};
 use crate::progress::{named_par_iter, MaybeSync, par_iter};
 use crate::float_vectors::{InnerProduct, DotProduct};
 // use crate::measures::{DotProduct, InnerProduct};
 use crate::heaps::{MaxHeap, MinHeap, GenericHeap};
+#[cfg(feature="python")]
+use crate::pydata::H5PyDataset;
 
 pub struct BinarizationEvaluator {}
 impl BinarizationEvaluator {
@@ -220,6 +222,7 @@ impl BinarizationEvaluator {
 		self.abstract_refine(data, queries, hamming_ids, k, chunk_size)
 	}
 
+	#[cfg(feature="python")]
 	pub fn refine_h5<
 		F: HIOBFloat,
 		TQ: Data<Elem=F>,
@@ -554,6 +557,7 @@ impl BinarizationEvaluator {
 		)
 	}
 
+	#[cfg(feature="python")]
 	pub fn query_cascade_h5<
 		B: HIOBBits,
 		F: HIOBFloat,
