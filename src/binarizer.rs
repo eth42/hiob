@@ -21,9 +21,11 @@ use crate::float_vectors::{DotProduct, InnerProduct};
 use crate::bits::{Bits};
 use crate::progress::{named_range, par_iter, MaybeSend, MaybeSync};
 #[cfg(feature="python")]
-use crate::{
-	pydata::{CachingH5PyReader, CachingNumpyEquivalent},
-	data::{AsyncMatrixDataSource},
+use {
+	crate::{
+		pydata::{CachingH5PyReader, CachingNumpyEquivalent},
+		data::{AsyncMatrixDataSource},
+	},
 	ndarray::{Slice},
 };
 

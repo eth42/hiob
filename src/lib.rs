@@ -1,20 +1,20 @@
 #![allow(dead_code)]
 
-mod bit_vectors;
-mod float_vectors;
-mod binarizer;
-mod bits;
-mod progress;
-mod eval;
-mod index;
-mod heaps;
-mod random;
-mod data;
+pub mod bit_vectors;
+pub mod float_vectors;
+pub mod binarizer;
+pub mod bits;
+pub mod progress;
+pub mod eval;
+pub mod index;
+pub mod heaps;
+pub mod random;
+pub mod data;
 
 #[cfg(feature="python")]
-mod pybridge;
+pub mod pybridge;
 #[cfg(feature="python")]
-mod pydata;
+pub mod pydata;
 
 
 #[allow(unreachable_code)]

@@ -1,19 +1,19 @@
 #![allow(dead_code)]
 
 
-mod bit_vectors;
-mod float_vectors;
+pub mod bit_vectors;
+pub mod float_vectors;
 // mod measures;
-mod binarizer;
-mod bits;
-mod progress;
-mod eval;
-mod index;
-mod heaps;
-mod random;
-mod data;
+pub mod binarizer;
+pub mod bits;
+pub mod progress;
+pub mod eval;
+pub mod index;
+pub mod heaps;
+pub mod random;
+pub mod data;
 #[cfg(feature="python")]
-mod pydata;
+pub mod pydata;
 
 use {
 	ndarray::{Axis, Array, Array2},
