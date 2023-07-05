@@ -25,6 +25,20 @@ pub trait AsyncMatrixDataSource<T>: MatrixDataSource<T> {
 	fn get_cached(&mut self) -> Option<Array2<T>>;
 }
 
+
+impl<T, M: MatrixDataSource<T>> MatrixDataSource<T> for &M {
+	#[inline(always)]
+	fn n_rows(&self) -> usize { M::n_rows(&self) }
+	#[inline(always)]
+	fn n_cols(&self) -> usize { M::n_cols(&self) }
+	#[inline(always)]
+	fn get_row(&self, i_row: usize) -> Array1<T> { M::get_row(&self, i_row) }
+	#[inline(always)]
+	fn get_rows(&self, i_rows: &Vec<usize>) -> Array2<T> { M::get_rows(&self, i_rows) }
+	#[inline(always)]
+	fn get_rows_slice(&self, i_row_from: usize, i_row_to: usize) -> Array2<T> { M::get_rows_slice(&self, i_row_from, i_row_to) }
+}
+
 impl<T: Copy+Clone, D: Data<Elem=T>> MatrixDataSource<T> for ArrayBase<D, Ix2> {
 	fn n_rows(&self) -> usize {
 		self.shape()[0]
