@@ -310,10 +310,9 @@ impl BinarizationEvaluator {
 			let n_bins = data_bins.len();
 			let n_queries = queries_bins.get_unchecked(0).shape()[0];
 			let n_chunks = (n_queries + (chunk_size-1)) / chunk_size;
-			let init_k = *ks.get_unchecked(0);
 			let final_k = *ks.get_unchecked(ks.len()-1);
-			let mut nn_dists = Array2::zeros((n_queries, *ks.last().unwrap_unchecked()));
-			let mut nn_idxs = Array2::zeros((n_queries, *ks.last().unwrap_unchecked()));
+			let mut nn_dists = Array2::zeros((n_queries, final_k));
+			let mut nn_idxs = Array2::zeros((n_queries, final_k));
 			let raw_iter = (0..n_chunks)
 			.zip(nn_dists.axis_chunks_iter_mut(Axis(0), chunk_size))
 			.zip(nn_idxs.axis_chunks_iter_mut(Axis(0), chunk_size));
@@ -345,7 +344,7 @@ impl BinarizationEvaluator {
 							.enumerate()
 							.for_each(|(i_row, row)| {
 								let v = row.hamming_dist_same(&q);
-								if next_heap.size() < init_k {
+								if next_heap.size() < k {
 									next_heap.push(v, i_row);
 								} else if next_heap.peek().unwrap_unchecked().0 > v {
 									next_heap.pop();
