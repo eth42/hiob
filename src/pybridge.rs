@@ -34,8 +34,10 @@ macro_rules! hiob_struct_gen {
 				pub fn new(
 					data: PyReadonlyArray2<$prec_type>,
 					n_bits: usize,
+					affine: bool,
 					scale: Option<f64>,
 					centers: Option<PyReadonlyArray2<$prec_type>>,
+					center_biases: Option<PyReadonlyArray1<$prec_type>>,
 					init_greedy: Option<bool>,
 					init_ransac: Option<bool>,
 					ransac_pairs_per_bit: Option<usize>,
@@ -44,9 +46,13 @@ macro_rules! hiob_struct_gen {
 					Self{hiob: HIOB::new(
 						data.as_array().into_owned(),
 						n_bits,
+						affine,
 						scale.map(|v| <$prec_type as NumCast>::from(v).unwrap()),
 						if centers.is_some() {
 							Some(centers.unwrap().as_array().into_owned())
+						} else { None },
+						if center_biases.is_some() {
+							Some(center_biases.unwrap().as_array().into_owned())
 						} else { None },
 						init_greedy,
 						init_ransac,
@@ -95,6 +101,23 @@ macro_rules! hiob_struct_gen {
 				#[getter]
 				pub fn get_centers<'py>(&self, py: Python<'py>) -> &'py PyArray2<$prec_type> {
 					self.hiob.get_centers().to_pyarray(py)
+				}
+				#[getter]
+				pub fn get_is_affine(&self) -> PyResult<bool> {
+					Ok(self.hiob.get_is_affine())
+				}
+				#[getter]
+				pub fn get_center_biases<'py>(&self, py: Python<'py>) -> &'py PyArray1<$prec_type> {
+					self.hiob.get_center_biases().to_pyarray(py)
+				}
+				pub fn set_center(&mut self, i_center: usize, center: PyReadonlyArray1<$prec_type>) {
+					self.hiob.set_center(i_center, &center.as_array());
+				}
+				pub fn set_bias(&mut self, i_center: usize, bias: f64) {
+					self.hiob.set_bias(i_center, <$prec_type as NumCast>::from(bias).unwrap());
+				}
+				pub fn set_center_bias(&mut self, i_center: usize, center: PyReadonlyArray1<$prec_type>, bias: f64) {
+					self.hiob.set_center_bias(i_center, &center.as_array(), <$prec_type as NumCast>::from(bias).unwrap());
 				}
 				// #[getter]
 				// pub fn get_data_bins<'py>(&self, py: Python<'py>) -> &'py PyArray2<$bin_type> {
@@ -174,9 +197,11 @@ macro_rules! stochastic_hiob_struct_gen {
 					sample_size: usize,
 					its_per_sample: usize,
 					n_bits: usize,
+					affine: bool,
 					perm_gen_rounds: Option<usize>,
 					scale: Option<f64>,
 					centers: Option<PyReadonlyArray2<$prec_type>>,
+					center_biases: Option<PyReadonlyArray1<$prec_type>>,
 					init_greedy: Option<bool>,
 					init_ransac: Option<bool>,
 					ransac_pairs_per_bit: Option<usize>,
@@ -189,10 +214,14 @@ macro_rules! stochastic_hiob_struct_gen {
 						sample_size,
 						its_per_sample,
 						n_bits,
+						affine,
 						perm_gen_rounds,
 						scale.map(|v| <$prec_type as NumCast>::from(v).unwrap()),
 						if centers.is_some() {
 							Some(centers.unwrap().as_array().into_owned())
+						} else { None },
+						if center_biases.is_some() {
+							Some(center_biases.unwrap().as_array().into_owned())
 						} else { None },
 						init_greedy,
 						init_ransac,
@@ -220,9 +249,11 @@ macro_rules! stochastic_hiob_struct_gen {
 					sample_size: usize,
 					its_per_sample: usize,
 					n_bits: usize,
+					affine: bool,
 					perm_gen_rounds: Option<usize>,
 					scale: Option<f64>,
 					centers: Option<PyReadonlyArray2<$prec_type>>,
+					center_biases: Option<PyReadonlyArray1<$prec_type>>,
 					init_greedy: Option<bool>,
 					init_ransac: Option<bool>,
 					ransac_pairs_per_bit: Option<usize>,
@@ -234,10 +265,14 @@ macro_rules! stochastic_hiob_struct_gen {
 						sample_size,
 						its_per_sample,
 						n_bits,
+						affine,
 						perm_gen_rounds,
 						scale.map(|v| <$prec_type as NumCast>::from(v).unwrap()),
 						if centers.is_some() {
 							Some(centers.unwrap().as_array().into_owned())
+						} else { None },
+						if center_biases.is_some() {
+							Some(center_biases.unwrap().as_array().into_owned())
 						} else { None },
 						init_greedy,
 						init_ransac,
@@ -311,6 +346,23 @@ macro_rules! stochastic_hiob_struct_gen {
 				#[getter]
 				pub fn get_centers<'py>(&self, py: Python<'py>) -> &'py PyArray2<$prec_type> {
 					self.shiob.get_centers().to_pyarray(py)
+				}
+				#[getter]
+				pub fn get_is_affine(&self) -> PyResult<bool> {
+					Ok(self.shiob.get_is_affine())
+				}
+				#[getter]
+				pub fn get_center_biases<'py>(&self, py: Python<'py>) -> &'py PyArray1<$prec_type> {
+					self.shiob.get_center_biases().to_pyarray(py)
+				}
+				pub fn set_center(&mut self, i_center: usize, center: PyReadonlyArray1<$prec_type>) {
+					self.shiob.set_center(i_center, &center.as_array());
+				}
+				pub fn set_bias(&mut self, i_center: usize, bias: f64) {
+					self.shiob.set_bias(i_center, <$prec_type as NumCast>::from(bias).unwrap());
+				}
+				pub fn set_center_bias(&mut self, i_center: usize, center: PyReadonlyArray1<$prec_type>, bias: f64) {
+					self.shiob.set_center_bias(i_center, &center.as_array(), <$prec_type as NumCast>::from(bias).unwrap());
 				}
 				// #[getter]
 				// pub fn get_data_bins<'py>(&self, py: Python<'py>) -> &'py PyArray2<$bin_type> {

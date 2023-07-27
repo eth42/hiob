@@ -1,4 +1,4 @@
-use std::{ops::{Sub, AddAssign}, f64::consts::PI};
+use std::{ops::{Sub, AddAssign, Add}, f64::consts::PI};
 use std::iter::Sum;
 
 
@@ -75,17 +75,22 @@ pub struct HIOB<F: HIOBFloat, B: HIOBBits> where Array1<B>: BitVectorMut {
 	displace_vec_cache: Array1<F>,
 	calc_vec: Array1<F>,
 	centers_calc_cache: Array2<F>,
+	is_affine: bool,
+	center_biases: Array1<F>,
+	biases_calc_cache: Array1<F>,
 }
 impl<F: HIOBFloat, B: HIOBBits> HIOB<F, B> where Array1<B>: BitVectorMut {
 	pub fn new(
 		data_in: Array2<F>,
 		n_bits: usize,
+		affine: bool,
 		scale: Option<F>,
 		centers: Option<Array2<F>>,
+		center_biases: Option<Array1<F>>,
 		init_greedy: Option<bool>,
 		init_ransac: Option<bool>,
 		ransac_pairs_per_bit: Option<usize>,
-		ransac_sub_sample: Option<usize>
+		ransac_sub_sample: Option<usize>,
 	) -> HIOB<F, B> {
 		let n = data_in.shape()[0];
 		let d = data_in.shape()[1];
@@ -93,10 +98,13 @@ impl<F: HIOBFloat, B: HIOBBits> HIOB<F, B> where Array1<B>: BitVectorMut {
 		let data_bin_length = n_bits / B::size() + (if n_bits % B::size() > 0 {1} else {0});
 		/* Calculate the number of instances of B to accommodate >=n bits */
 		let center_bin_length = n / B::size() + (if n % B::size() > 0 {1} else {0});
+		let init_greedy = init_greedy.is_some() && init_greedy.unwrap();
+		let init_ransac = init_ransac.is_some() && init_ransac.unwrap();
+		let init_basic = !init_greedy && !init_ransac;
 		let centers = if centers.is_some() {
 			centers.unwrap()
 		} else {
-			if init_greedy.is_none() || !init_greedy.unwrap() {
+			if init_basic {
 				/* Choose centers at random */
 				let mut rand_centers = Array2::zeros([n_bits, d]);
 				_idx_choice(n, n_bits)
@@ -107,7 +115,13 @@ impl<F: HIOBFloat, B: HIOBBits> HIOB<F, B> where Array1<B>: BitVectorMut {
 				Array2::zeros([n_bits, d])
 			}
 		};
-		let centers_calc_cache = centers.view().to_owned();
+		let center_biases = if center_biases.is_some() {
+			center_biases.unwrap()
+		} else {
+			Array1::zeros([n_bits])
+		};
+		let centers_calc_cache = Array2::zeros([n_bits, d]);
+		let biases_calc_cache = Array1::zeros([n_bits]);
 		/* Create instance */
 		let mut ret = HIOB {
 			n_data: n,
@@ -131,11 +145,14 @@ impl<F: HIOBFloat, B: HIOBBits> HIOB<F, B> where Array1<B>: BitVectorMut {
 			displace_vec_cache: Array1::from_elem((d,), F::zero()),
 			calc_vec: Array1::from_elem((d,),F::zero()),
 			centers_calc_cache: centers_calc_cache,
+			is_affine: affine,
+			center_biases: center_biases,
+			biases_calc_cache: biases_calc_cache,
 		};
 		/* Initialize the instance by computing all entries in the dyn prog matrices */
-		if init_greedy.is_some() && init_greedy.unwrap() {
+		if init_greedy {
 			ret.init_greedy();
-		} else if init_ransac.is_some() && init_ransac.unwrap() {
+		} else if init_ransac {
 			ret.init_ransac();
 		} else {
 			ret.init_regular();
@@ -148,6 +165,8 @@ impl<F: HIOBFloat, B: HIOBBits> HIOB<F, B> where Array1<B>: BitVectorMut {
 		.for_each(|i| self.update_bits(i));
 		named_range(self.n_bits, "Initializing overlap array")
 		.for_each(|i| self.update_overlaps(i));
+		self.centers_calc_cache = self.centers.view().to_owned();
+		self.biases_calc_cache = self.center_biases.view().to_owned();
 	}
 	fn init_greedy(&mut self) {
 		const ATTEMPTS: usize = 20;
@@ -198,32 +217,65 @@ impl<F: HIOBFloat, B: HIOBBits> HIOB<F, B> where Array1<B>: BitVectorMut {
 		let mut c_bit_vecs = Array2::from_elem([self.n_bits, n_buckets], B::zeros());
 		(0..self.n_bits).for_each(|i_center| {
 			let mut best_c: Array1<F> = Array1::from_elem(self.n_dims, F::zero());
+			let mut best_bias: F = F::zero();
 			let mut best_bit_vec: Array1<B> = Array1::from_elem(n_buckets, B::zeros());
 			let mut worst_sim: f64 = f64::MAX;
 			for _ in 0..self.ransac_pairs_per_bit {
 				let p1 = rand::random::<usize>() % self.n_data;
 				let mut p2 = rand::random::<usize>() % self.n_data;
-				while p1 == p2 { p2 = rand::random::<usize>() % self.n_data; }
 				let mut c = self.data.row(p1).sub(&self.data.row(p2));
-				let cn = unsafe { Self::vec_norm(&c) };
+				let mut cn = unsafe { Self::vec_norm(&c) };
+				while cn <= F::zero() {
+					p2 = rand::random::<usize>() % self.n_data;
+					c = self.data.row(p1).sub(&self.data.row(p2));
+					cn = unsafe { Self::vec_norm(&c) };
+				}
 				c.mapv_inplace(|v| v/cn);
 				let mut bit_vec = Array1::from_elem(n_buckets, B::zeros());
-				par_iter(bit_vec.iter_mut().enumerate())
-				.for_each(|(i_item, target)|
-					(0..B::size()).for_each(|i_bit| {
-						let i_pnt = i_item*B::size()+i_bit;
-						if i_pnt < self.ransac_sub_sample {
-							let prod = DotProduct::prod_arrs(
-								&c,
-								&self.data.row(unsafe { *samples.get_unchecked(i_pnt) })
-							);
-							let bit = prod >= F::zero();
-							target.set_bit_unchecked(i_bit, bit);
-						}
-					})
-				);
+				let mut bias = F::zero();
+				if !self.is_affine {
+					par_iter(bit_vec.iter_mut().enumerate())
+					.for_each(|(i_item, target)|
+						(0..B::size()).for_each(|i_bit| {
+							let i_pnt = i_item*B::size()+i_bit;
+							if i_pnt < self.ransac_sub_sample {
+								let prod = DotProduct::prod_arrs(
+									&c,
+									&self.data.row(unsafe { *samples.get_unchecked(i_pnt) })
+								);
+								let bit = prod >= F::zero();
+								target.set_bit_unchecked(i_bit, bit);
+							}
+						})
+					);
+				} else {
+					let mut dots = vec![F::zero(); self.ransac_sub_sample];
+					par_iter(dots.iter_mut().zip(samples.iter()))
+					.for_each(|(dot_target, idx)| {
+						*dot_target = DotProduct::prod_arrs(
+							&c,
+							&self.data.row(*idx)
+						);
+					});
+					// let mut sorted_dots: Vec<F> = dots.to_vec();
+					// sorted_dots.sort_by(|a,b| a.partial_cmp(b).unwrap());
+					// bias = sorted_dots[sorted_dots.len()/2];
+					bias = dots[rand::random::<usize>() % dots.len()];
+					par_iter(bit_vec.iter_mut().enumerate())
+					.for_each(|(i_item, target)|
+						(0..B::size()).for_each(|i_bit| {
+							let i_pnt = i_item*B::size()+i_bit;
+							if i_pnt < self.ransac_sub_sample {
+								let prod = dots[i_pnt];
+								let bit = prod >= bias;
+								target.set_bit_unchecked(i_bit, bit);
+							}
+						})
+					);
+				}
 				if i_center == 0 {
 					best_c = c;
+					best_bias = bias;
 					best_bit_vec = bit_vec;
 					break;
 				}
@@ -237,11 +289,13 @@ impl<F: HIOBFloat, B: HIOBBits> HIOB<F, B> where Array1<B>: BitVectorMut {
 				.unwrap();
 				if local_worst_sim < worst_sim {
 					best_c = c;
+					best_bias = bias;
 					best_bit_vec = bit_vec;
 					worst_sim = local_worst_sim;
 				}
 			}
 			self.centers.row_mut(i_center).assign(&best_c);
+			self.center_biases[i_center] = best_bias;
 			c_bit_vecs.row_mut(i_center).assign(&best_bit_vec);
 		});
 		self.init_regular();
@@ -253,31 +307,62 @@ impl<F: HIOBFloat, B: HIOBBits> HIOB<F, B> where Array1<B>: BitVectorMut {
 	}
 	fn update_bits(&mut self, i_center: usize) {
 		let c = self.centers.row(i_center);
+		let bias = self.center_biases[i_center];
 		let mut cb = self.data_bins_t.row_mut(i_center);
 		#[cfg(feature="parallel")]
 		#[allow(non_snake_case)]
-		let TOTAL_CHUNKS_LOWER: usize = cb.shape()[0] / rayon::current_num_threads();
+		let TOTAL_CHUNKS_LOWER: usize = (cb.shape()[0] / rayon::current_num_threads()).max(1);
 		#[cfg(not(feature="parallel"))]
 		const TOTAL_CHUNKS_LOWER: usize = 200;
 		let n_blocks = (TOTAL_CHUNKS_LOWER+(B::size()-1))/B::size();
-		par_iter(
-			cb.axis_chunks_iter_mut(Axis(0), n_blocks)
-			.zip(self.data.axis_chunks_iter(Axis(0), n_blocks*B::size()))
-		)
-		.for_each(|(mut cb_block, data_block)| {
-			cb_block.iter_mut()
-			.zip(data_block.axis_chunks_iter(Axis(0), B::size()))
-			.for_each(|(target, points)| {
-				let mut bits = B::zeros();
-				points.axis_iter(Axis(0))
-				.enumerate()
-				.for_each(|(i_bit, point)| {
-					let bit = DotProduct::prod_arrs(&c, &point) >= F::zero();
-					bits.set_bit_unchecked(i_bit, bit);
+		if !self.is_affine {
+			par_iter(
+				cb.axis_chunks_iter_mut(Axis(0), n_blocks)
+				.zip(self.data.axis_chunks_iter(Axis(0), n_blocks*B::size()))
+			)
+			.for_each(|(mut cb_block, data_block)| {
+				cb_block.iter_mut()
+				.zip(data_block.axis_chunks_iter(Axis(0), B::size()))
+				.for_each(|(target, points)| {
+					let mut bits = B::zeros();
+					points.axis_iter(Axis(0))
+					.enumerate()
+					.for_each(|(i_bit, point)| {
+						let bit = DotProduct::prod_arrs(&c, &point) >= F::zero();
+						bits.set_bit_unchecked(i_bit, bit);
+					});
+					*target = bits;
 				});
-				*target = bits;
 			});
-		});
+		} else {
+			let mut dots = vec![F::zero(); self.n_data];
+			par_iter(
+				cb.axis_chunks_iter_mut(Axis(0), n_blocks)
+				.zip(
+					dots.chunks_mut(n_blocks*B::size())
+					.zip(self.data.axis_chunks_iter(Axis(0), n_blocks*B::size()))
+				)
+			)
+			.for_each(|(mut cb_block, (dots_block, data_block))| {
+				cb_block.iter_mut()
+				.zip(
+					dots_block.chunks_mut(B::size())
+					.zip(data_block.axis_chunks_iter(Axis(0), B::size()))
+				)
+				.for_each(|(target, (dots_chunk, points))| {
+					let mut bits = B::zeros();
+					points.axis_iter(Axis(0))
+					.enumerate()
+					.for_each(|(i_bit, point)| {
+						let dot = DotProduct::prod_arrs(&c, &point);
+						dots_chunk[i_bit] = dot;
+						let bit = dot >= bias;
+						bits.set_bit_unchecked(i_bit, bit);
+					});
+					*target = bits;
+				});
+			});
+		}
 	}
 	fn update_overlaps(&mut self, i_center: usize) {
 		unsafe { *self.sim_sums.uget_mut(i_center) = 0.0; }
@@ -312,26 +397,6 @@ impl<F: HIOBFloat, B: HIOBBits> HIOB<F, B> where Array1<B>: BitVectorMut {
 	unsafe fn vec_norm<D: Data<Elem=F>>(vec: &ArrayBase<D, Ix1>) -> F {
 		vec.iter().map(|&v| v*v).reduce(|a,b| a+b).unwrap_unchecked().sqrt()
 	}
-	// #[inline]
-	// fn displacement_vec(&self, i_center: usize, j_center: usize) -> Array1<F> {
-	// 	let frac_equal = unsafe { 
-	// 		F::from(*self.overlap_mat.uget([i_center,j_center])).unwrap_unchecked()
-	// 		/ F::from(self.n_data).unwrap_unchecked()
-	// 	};
-	// 	let frac_unequal = F::one() - frac_equal;
-	// 	let rot_angle = (frac_equal-frac_unequal)*self.pi_half;
-	// 	let factor = rot_angle.mul(self.scale).tan();
-	// 	let ci = self.centers.row(i_center);
-	// 	let cj = self.centers.row(j_center);
-	// 	let prod = DotProduct::prod_arrs(&ci, &cj);
-	// 	let mut displacement_vec: Array1<F> = ci.iter().zip(cj.iter())
-	// 	.map(|(v1,v2)| *v1 * prod - *v2)
-	// 	.collect();
-	// 	let norm = unsafe { HIOB::vec_norm(&displacement_vec) };
-	// 	let factor = factor/norm;
-	// 	displacement_vec.mapv_inplace(|v| v*factor);
-	// 	displacement_vec
-	// }
 	#[inline]
 	fn displacement_vec_in_cache(&mut self, i_center: usize, j_center: usize) {
 		let frac_equal = unsafe { 
@@ -354,11 +419,33 @@ impl<F: HIOBFloat, B: HIOBBits> HIOB<F, B> where Array1<B>: BitVectorMut {
 	#[inline]
 	fn agg_displacement_vec_in_cache(&mut self, i_center: usize, j_centers: Vec<usize>) {
 		self.displace_vec_cache.fill(F::zero());
+		let bias_i = self.center_biases[i_center];
 		j_centers.iter()
 		.filter(|&j_center| i_center != *j_center)
 		.for_each(|j_center| {
 			self.displacement_vec_in_cache(i_center, *j_center);
 			self.displace_vec_cache.add_assign(&self.calc_vec);
+			if self.is_affine {
+				/* Calculate intersection point a of current hyperplanes */
+				let center_i = self.centers.row(i_center);
+				let center_j = self.centers.row(*j_center);
+				let bias_j = self.center_biases[*j_center];
+				let center_dot = DotProduct::prod_arrs(&center_i, &center_j);
+				/* We use the definition of:
+				 * intersect = mult_i * center_i + mult_j * center_j
+				 * s.t. intersect.dot(center_i) = bias_i
+				 * and  intersect.dot(center_j) = bias_j */
+				let mult_i = (bias_j * center_dot - bias_i) / (center_dot*center_dot - F::one());
+				let mult_j = (bias_i * center_dot - bias_j) / (center_dot*center_dot - F::one());
+				let intersect = center_i.mapv(|v| v * mult_i) + center_j.mapv(|v| v * mult_j);
+				/* Now consider the vector to which center_i will be rotated
+				 * to get the preferred differential in bias */
+				let mut target_vec = center_i.add(&self.calc_vec);
+				let norm = unsafe { HIOB::vec_norm(&target_vec) };
+				target_vec.mapv_inplace(|v| v/norm);
+				let target_bias = DotProduct::prod_arrs(&target_vec, &intersect);
+				self.biases_calc_cache[i_center] += target_bias - bias_i;
+			}
 		});
 	}
 
@@ -381,7 +468,12 @@ impl<F: HIOBFloat, B: HIOBBits> HIOB<F, B> where Array1<B>: BitVectorMut {
 			let norm = unsafe { HIOB::vec_norm(&row) };
 			row.mapv_inplace(|v| v/norm);
 		});
-		std::mem::swap(&mut self.centers, &mut self.centers_calc_cache);
+		mis.iter().for_each(|&i_center| {
+			self.centers.row_mut(i_center).assign(&self.centers_calc_cache.row(i_center));
+			self.center_biases[i_center] = self.biases_calc_cache[i_center];
+		});
+		// std::mem::swap(&mut self.centers, &mut self.centers_calc_cache);
+		// std::mem::swap(&mut self.center_biases, &mut self.biases_calc_cache);
 		mis.iter().for_each(|&mi| {
 			self.update_bits(mi);
 			self.update_overlaps(mi);
@@ -394,11 +486,16 @@ impl<F: HIOBFloat, B: HIOBBits> HIOB<F, B> where Array1<B>: BitVectorMut {
 
 	pub fn binarize_single<D: Data<Elem=F>+MaybeSync>(&self, query: &ArrayBase<D, Ix1>) -> Array1<B> {
 		let mut bins = Array1::from_elem(self.data_bin_length, B::zeros());
-		bins.iter_mut().zip(self.centers.axis_chunks_iter(Axis(0), B::size()))
-		.for_each(|(b, lcenters)| {
-			lcenters.axis_iter(Axis(0)).enumerate()
-			.for_each(|(i_bit, center)| {
-				let bit = DotProduct::prod_arrs(&query, &center) >= F::zero();
+		bins.iter_mut().zip(
+			self.centers.axis_chunks_iter(Axis(0), B::size())
+			.zip(self.center_biases.axis_chunks_iter(Axis(0), B::size()))
+		)
+		.for_each(|(b, (lcenters, lbiases))| {
+			lcenters.axis_iter(Axis(0))
+			.zip(lbiases.iter())
+			.enumerate()
+			.for_each(|(i_bit, (center, bias))| {
+				let bit = DotProduct::prod_arrs(&query, &center) >= *bias;
 				b.set_bit(i_bit, bit);
 			});
 		});
@@ -417,11 +514,17 @@ impl<F: HIOBFloat, B: HIOBBits> HIOB<F, B> where Array1<B>: BitVectorMut {
 		.for_each(|(mut bins_row_chunk, query_chunk)| {
 			bins_row_chunk.axis_iter_mut(Axis(0)).zip(query_chunk.axis_iter(Axis(0)))
 			.for_each(|(mut bins_row, query)| {
-				bins_row.iter_mut().zip(self.centers.axis_chunks_iter(Axis(0), B::size()))
-				.for_each(|(b, lcenters)| {
-					lcenters.axis_iter(Axis(0)).enumerate()
-					.for_each(|(i_bit, center)| {
-						let bit = DotProduct::prod_arrs(&query, &center) >= F::zero();
+				bins_row.iter_mut()
+				.zip(
+					self.centers.axis_chunks_iter(Axis(0), B::size())
+					.zip(self.center_biases.axis_chunks_iter(Axis(0), B::size()))
+				)
+				.for_each(|(b, (lcenters, lbiases))| {
+					lcenters.axis_iter(Axis(0))
+					.zip(lbiases.iter())
+					.enumerate()
+					.for_each(|(i_bit, (center, bias))| {
+						let bit = DotProduct::prod_arrs(&query, &center) >= *bias;
 						b.set_bit(i_bit, bit);
 					});
 				});
@@ -462,6 +565,7 @@ impl<F: HIOBFloat, B: HIOBBits> HIOB<F, B> where Array1<B>: BitVectorMut {
 		Ok(ret)
 	}
 
+	/* Getters and setters */
 	pub fn get_n_data(&self) -> usize { self.n_data }
 	pub fn get_n_dims(&self) -> usize { self.n_dims }
 	pub fn get_n_bits(&self) -> usize { self.n_bits }
@@ -469,6 +573,21 @@ impl<F: HIOBFloat, B: HIOBBits> HIOB<F, B> where Array1<B>: BitVectorMut {
 	pub fn set_scale(&mut self, scale: F) { self.scale = scale }
 	pub fn get_data<'a>(&'a self) -> ArrayView2<'a, F> { self.data.view() }
 	pub fn get_centers<'a>(&'a self) -> ArrayView2<'a, F> { self.centers.view() }
+	pub fn get_is_affine(&self) -> bool { self.is_affine }
+	pub fn get_center_biases<'a>(&'a self) -> ArrayView1<'a, F> { self.center_biases.view() }
+	pub fn set_center<D: Data<Elem=F>>(&mut self, i_center: usize, center: &ArrayBase<D, Ix1>) {
+		self.centers.row_mut(i_center).assign(center);
+		self.update_bits(i_center);
+	}
+	pub fn set_bias(&mut self, i_center: usize, bias: F) {
+		self.center_biases[i_center] = bias;
+		self.update_bits(i_center);
+	}
+	pub fn set_center_bias<D: Data<Elem=F>>(&mut self, i_center: usize, center: &ArrayBase<D, Ix1>, bias: F) {
+		self.centers.row_mut(i_center).assign(center);
+		self.center_biases[i_center] = bias;
+		self.update_bits(i_center);
+	}
 	// pub fn get_data_bins<'a>(&'a self) -> ArrayView2<'a, B> { self.data_bins.view() }
 	pub fn get_overlap_mat<'a>(&'a self) -> ArrayView2<'a, usize> { self.overlap_mat.view() }
 	pub fn get_sim_mat<'a>(&'a self) -> ArrayView2<'a, f64> { self.sim_mat.view() }
@@ -496,9 +615,11 @@ impl<F: HIOBFloat, B: HIOBBits, D: MatrixDataSource<F>> StochasticHIOB<F,B,D> wh
 		sample_size: usize,
 		its_per_sample: usize,
 		n_bits: usize,
+		affine: bool,
 		perm_gen_rounds: Option<usize>,
 		scale: Option<F>,
 		centers: Option<Array2<F>>,
+		center_biases: Option<Array1<F>>,
 		init_greedy: Option<bool>,
 		init_ransac: Option<bool>,
 		ransac_pairs_per_bit: Option<usize>,
@@ -520,8 +641,10 @@ impl<F: HIOBFloat, B: HIOBBits, D: MatrixDataSource<F>> StochasticHIOB<F,B,D> wh
 			wrapped_hiob: HIOB::new(
 				initial_data,
 				n_bits,
+				affine,
 				Some(scale),
 				centers,
+				center_biases,
 				init_greedy,
 				init_ransac,
 				ransac_pairs_per_bit,
@@ -550,8 +673,10 @@ impl<F: HIOBFloat, B: HIOBBits, D: MatrixDataSource<F>> StochasticHIOB<F,B,D> wh
 			let mut new_wrapped_hiob = HIOB::new(
 				new_sample,
 				self.wrapped_hiob.n_bits,
+				self.wrapped_hiob.is_affine,
 				Some(self.wrapped_hiob.scale),
 				Some(self.wrapped_hiob.centers.clone()),
+				Some(self.wrapped_hiob.center_biases.clone()),
 				None, None, None, None
 			);
 			new_wrapped_hiob.set_update_parallel(self.wrapped_hiob.get_update_parallel());
@@ -587,6 +712,11 @@ impl<F: HIOBFloat, B: HIOBBits, D: MatrixDataSource<F>> StochasticHIOB<F,B,D> wh
 	pub fn set_scale(&mut self, scale: F) { self.wrapped_hiob.set_scale(scale) }
 	pub fn get_data<'a>(&'a self) -> ArrayView2<'a, F> { self.wrapped_hiob.get_data() }
 	pub fn get_centers<'a>(&'a self) -> ArrayView2<'a, F> { self.wrapped_hiob.get_centers() }
+	pub fn get_is_affine(&self) -> bool { self.wrapped_hiob.get_is_affine() }
+	pub fn get_center_biases<'a>(&'a self) -> ArrayView1<'a, F> { self.wrapped_hiob.get_center_biases() }
+	pub fn set_center<D2: Data<Elem=F>>(&mut self, i_center: usize, center: &ArrayBase<D2, Ix1>) { self.wrapped_hiob.set_center(i_center, center); }
+	pub fn set_bias(&mut self, i_center: usize, bias: F) { self.wrapped_hiob.set_bias(i_center, bias); }
+	pub fn set_center_bias<D2: Data<Elem=F>>(&mut self, i_center: usize, center: &ArrayBase<D2, Ix1>, bias: F) { self.wrapped_hiob.set_center_bias(i_center, center, bias); }
 	// pub fn get_data_bins<'a>(&'a self) -> ArrayView2<'a, B> { self.wrapped_hiob.get_data_bins() }
 	pub fn get_overlap_mat<'a>(&'a self) -> ArrayView2<'a, usize> { self.wrapped_hiob.get_overlap_mat() }
 	pub fn get_sim_mat<'a>(&'a self) -> ArrayView2<'a, f64> { self.wrapped_hiob.get_sim_mat() }
@@ -724,19 +854,3 @@ fn min_max_tests() {
 	assert!(true_min == arr1[i], "True min: {}, Via _argmin1: {}", true_min, arr1[i]);
 	assert!(true_min == pred_min, "True min: {}, Via _min1: {}", true_min, pred_min);
 }
-
-
-// #[test]
-// fn benchmark_access_dataset_time() {
-// 	use std::time::{SystemTime, UNIX_EPOCH};
-// 	let file = "/home/thordsen/tmp/sisap23challenge/data/laion2B-en-clip768v2-n=100K.h5";
-// 	let current_millis = || SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
-// 	let h: HIOB<f32, u64> = HIOB::new(Array2::zeros((1000, 768)), 1024, None, None, None, None, None, None);
-// 	let n_its = 1;
-// 	let start = current_millis();
-// 	(0..n_its).for_each(|_| {
-// 		_ = h.binarize_h5(file, "emb", 1000);
-// 	});
-// 	let end = current_millis();
-// 	println!("{:?}", (end-start)/n_its);
-// }
