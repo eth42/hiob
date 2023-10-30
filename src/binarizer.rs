@@ -78,6 +78,7 @@ pub struct HIOB<F: HIOBFloat, B: HIOBBits> where Array1<B>: BitVectorMut {
 	is_affine: bool,
 	center_biases: Array1<F>,
 	biases_calc_cache: Array1<F>,
+	balance_regression_factor: F,
 }
 impl<F: HIOBFloat, B: HIOBBits> HIOB<F, B> where Array1<B>: BitVectorMut {
 	pub fn new(
@@ -87,6 +88,7 @@ impl<F: HIOBFloat, B: HIOBBits> HIOB<F, B> where Array1<B>: BitVectorMut {
 		scale: Option<F>,
 		centers: Option<Array2<F>>,
 		center_biases: Option<Array1<F>>,
+		balance_regression_factor: Option<F>,
 		init_greedy: Option<bool>,
 		init_ransac: Option<bool>,
 		ransac_pairs_per_bit: Option<usize>,
@@ -148,6 +150,7 @@ impl<F: HIOBFloat, B: HIOBBits> HIOB<F, B> where Array1<B>: BitVectorMut {
 			is_affine: affine,
 			center_biases: center_biases,
 			biases_calc_cache: biases_calc_cache,
+			balance_regression_factor: balance_regression_factor.unwrap_or(F::zero()),
 		};
 		/* Initialize the instance by computing all entries in the dyn prog matrices */
 		if init_greedy {
@@ -334,7 +337,7 @@ impl<F: HIOBFloat, B: HIOBBits> HIOB<F, B> where Array1<B>: BitVectorMut {
 					*target = bits;
 				});
 			});
-		} else {
+		} else if self.balance_regression_factor <= F::zero() {
 			let mut dots = vec![F::zero(); self.n_data];
 			par_iter(
 				cb.axis_chunks_iter_mut(Axis(0), n_blocks)
@@ -357,6 +360,55 @@ impl<F: HIOBFloat, B: HIOBBits> HIOB<F, B> where Array1<B>: BitVectorMut {
 						let dot = DotProduct::prod_arrs(&c, &point);
 						dots_chunk[i_bit] = dot;
 						let bit = dot >= bias;
+						bits.set_bit_unchecked(i_bit, bit);
+					});
+					*target = bits;
+				});
+			});
+		} else {
+			let mut dots = vec![F::zero(); self.n_data];
+			let mut dots_for_median = vec![F::zero(); self.n_data];
+			par_iter(
+				dots.chunks_mut(n_blocks*B::size())
+				.zip(dots_for_median.chunks_mut(n_blocks*B::size()))
+				.zip(self.data.axis_chunks_iter(Axis(0), n_blocks*B::size()))
+			)
+			.for_each(|((dots_block, dots_for_median_block), data_block)| {
+				dots_block.iter_mut()
+				.zip(dots_for_median_block.iter_mut())
+				.zip(data_block.axis_iter(Axis(0)))
+				.for_each(|((dots_val, dots_for_median_val), point)| {
+					let dot = DotProduct::prod_arrs(&c, &point);
+					*dots_val = dot;
+					*dots_for_median_val = dot;
+				});
+			});
+			/* Select median, i.e., balanced bias */
+			let balance_index = self.n_data/2;
+			unsafe {
+				dots_for_median.select_nth_unstable_by(
+					balance_index,
+					|a,b| a.partial_cmp(b).unwrap_unchecked()
+				);
+			}
+			let balanced_bias = dots_for_median[balance_index];
+			/* Compute balance regressed bias */
+			let bias = bias + self.balance_regression_factor * (balanced_bias - bias);
+			self.center_biases[i_center] = bias;
+			/* Update bits with regressed bias */
+			par_iter(
+				cb.axis_chunks_iter_mut(Axis(0), n_blocks)
+				.zip(dots.chunks_mut(n_blocks*B::size()))
+			)
+			.for_each(|(mut cb_block, dots_block)| {
+				cb_block.iter_mut()
+				.zip(dots_block.chunks_mut(B::size()))
+				.for_each(|(target, dots_chunk)| {
+					let mut bits = B::zeros();
+					dots_chunk.iter()
+					.enumerate()
+					.for_each(|(i_bit, dot)| {
+						let bit = dot >= &bias;
 						bits.set_bit_unchecked(i_bit, bit);
 					});
 					*target = bits;
@@ -571,6 +623,8 @@ impl<F: HIOBFloat, B: HIOBBits> HIOB<F, B> where Array1<B>: BitVectorMut {
 	pub fn get_n_bits(&self) -> usize { self.n_bits }
 	pub fn get_scale(&self) -> F { self.scale }
 	pub fn set_scale(&mut self, scale: F) { self.scale = scale }
+	pub fn get_balance_regression_factor(&self) -> F { self.balance_regression_factor }
+	pub fn set_balance_regression_factor(&mut self, balance_regression_factor: F) { self.balance_regression_factor = balance_regression_factor }
 	pub fn get_data<'a>(&'a self) -> ArrayView2<'a, F> { self.data.view() }
 	pub fn get_centers<'a>(&'a self) -> ArrayView2<'a, F> { self.centers.view() }
 	pub fn get_is_affine(&self) -> bool { self.is_affine }
@@ -620,6 +674,7 @@ impl<F: HIOBFloat, B: HIOBBits, D: MatrixDataSource<F>> StochasticHIOB<F,B,D> wh
 		scale: Option<F>,
 		centers: Option<Array2<F>>,
 		center_biases: Option<Array1<F>>,
+		balance_regression_factor: Option<F>,
 		init_greedy: Option<bool>,
 		init_ransac: Option<bool>,
 		ransac_pairs_per_bit: Option<usize>,
@@ -645,6 +700,7 @@ impl<F: HIOBFloat, B: HIOBBits, D: MatrixDataSource<F>> StochasticHIOB<F,B,D> wh
 				Some(scale),
 				centers,
 				center_biases,
+				balance_regression_factor,
 				init_greedy,
 				init_ransac,
 				ransac_pairs_per_bit,
@@ -677,6 +733,7 @@ impl<F: HIOBFloat, B: HIOBBits, D: MatrixDataSource<F>> StochasticHIOB<F,B,D> wh
 				Some(self.wrapped_hiob.scale),
 				Some(self.wrapped_hiob.centers.clone()),
 				Some(self.wrapped_hiob.center_biases.clone()),
+				Some(self.wrapped_hiob.balance_regression_factor.clone()),
 				None, None, None, None
 			);
 			new_wrapped_hiob.set_update_parallel(self.wrapped_hiob.get_update_parallel());
@@ -710,6 +767,8 @@ impl<F: HIOBFloat, B: HIOBBits, D: MatrixDataSource<F>> StochasticHIOB<F,B,D> wh
 	pub fn get_n_bits(&self) -> usize { self.wrapped_hiob.get_n_bits() }
 	pub fn get_scale(&self) -> F { self.wrapped_hiob.get_scale() }
 	pub fn set_scale(&mut self, scale: F) { self.wrapped_hiob.set_scale(scale) }
+	pub fn get_balance_regression_factor(&self) -> F { self.wrapped_hiob.get_balance_regression_factor() }
+	pub fn set_balance_regression_factor(&mut self, balance_regression_factor: F) { self.wrapped_hiob.set_balance_regression_factor(balance_regression_factor) }
 	pub fn get_data<'a>(&'a self) -> ArrayView2<'a, F> { self.wrapped_hiob.get_data() }
 	pub fn get_centers<'a>(&'a self) -> ArrayView2<'a, F> { self.wrapped_hiob.get_centers() }
 	pub fn get_is_affine(&self) -> bool { self.wrapped_hiob.get_is_affine() }

@@ -38,6 +38,7 @@ macro_rules! hiob_struct_gen {
 					scale: Option<f64>,
 					centers: Option<PyReadonlyArray2<$prec_type>>,
 					center_biases: Option<PyReadonlyArray1<$prec_type>>,
+					balance_regression_factor: Option<f64>,
 					init_greedy: Option<bool>,
 					init_ransac: Option<bool>,
 					ransac_pairs_per_bit: Option<usize>,
@@ -54,6 +55,7 @@ macro_rules! hiob_struct_gen {
 						if center_biases.is_some() {
 							Some(center_biases.unwrap().as_array().into_owned())
 						} else { None },
+						balance_regression_factor.map(|v| <$prec_type as NumCast>::from(v).unwrap()),
 						init_greedy,
 						init_ransac,
 						ransac_pairs_per_bit,
@@ -93,6 +95,14 @@ macro_rules! hiob_struct_gen {
 				#[setter]
 				pub fn set_scale(&mut self, scale: f64) -> PyResult<()> {
 					Ok(self.hiob.set_scale(<$prec_type as NumCast>::from(scale).unwrap()))
+				}
+				#[getter]
+				pub fn get_balance_regression_factor(&self) -> PyResult<f64> {
+					Ok(<f64 as NumCast>::from(self.hiob.get_balance_regression_factor()).unwrap())
+				}
+				#[setter]
+				pub fn set_balance_regression_factor(&mut self, balance_regression_factor: f64) -> PyResult<()> {
+					Ok(self.hiob.set_balance_regression_factor(<$prec_type as NumCast>::from(balance_regression_factor).unwrap()))
 				}
 				#[getter]
 				pub fn get_data<'py>(&self, py: Python<'py>) -> &'py PyArray2<$prec_type> {
@@ -202,6 +212,7 @@ macro_rules! stochastic_hiob_struct_gen {
 					scale: Option<f64>,
 					centers: Option<PyReadonlyArray2<$prec_type>>,
 					center_biases: Option<PyReadonlyArray1<$prec_type>>,
+					balance_regression_factor: Option<f64>,
 					init_greedy: Option<bool>,
 					init_ransac: Option<bool>,
 					ransac_pairs_per_bit: Option<usize>,
@@ -223,6 +234,7 @@ macro_rules! stochastic_hiob_struct_gen {
 						if center_biases.is_some() {
 							Some(center_biases.unwrap().as_array().into_owned())
 						} else { None },
+						balance_regression_factor.map(|v| <$prec_type as NumCast>::from(v).unwrap()),
 						init_greedy,
 						init_ransac,
 						ransac_pairs_per_bit,
@@ -254,6 +266,7 @@ macro_rules! stochastic_hiob_struct_gen {
 					scale: Option<f64>,
 					centers: Option<PyReadonlyArray2<$prec_type>>,
 					center_biases: Option<PyReadonlyArray1<$prec_type>>,
+					balance_regression_factor: Option<f64>,
 					init_greedy: Option<bool>,
 					init_ransac: Option<bool>,
 					ransac_pairs_per_bit: Option<usize>,
@@ -274,6 +287,7 @@ macro_rules! stochastic_hiob_struct_gen {
 						if center_biases.is_some() {
 							Some(center_biases.unwrap().as_array().into_owned())
 						} else { None },
+						balance_regression_factor.map(|v| <$prec_type as NumCast>::from(v).unwrap()),
 						init_greedy,
 						init_ransac,
 						ransac_pairs_per_bit,
@@ -338,6 +352,14 @@ macro_rules! stochastic_hiob_struct_gen {
 				#[setter]
 				pub fn set_scale(&mut self, scale: f64) -> PyResult<()> {
 					Ok(self.shiob.set_scale(<$prec_type as NumCast>::from(scale).unwrap()))
+				}
+				#[getter]
+				pub fn get_balance_regression_factor(&self) -> PyResult<f64> {
+					Ok(<f64 as NumCast>::from(self.shiob.get_balance_regression_factor()).unwrap())
+				}
+				#[setter]
+				pub fn set_balance_regression_factor(&mut self, balance_regression_factor: f64) -> PyResult<()> {
+					Ok(self.shiob.set_balance_regression_factor(<$prec_type as NumCast>::from(balance_regression_factor).unwrap()))
 				}
 				#[getter]
 				pub fn get_data<'py>(&self, py: Python<'py>) -> &'py PyArray2<$prec_type> {

@@ -59,6 +59,7 @@ fn manual_benchmark() {
 		Some(0.1),
 		Some(init_centers),
 		None,
+		None,
 		Some(false),
 		Some(false),
 		None,
