@@ -1,3 +1,5 @@
+use std::marker::PhantomData;
+
 #[cfg(feature="rust-hdf5")]
 use {
 	hdf5::H5Type,
@@ -11,6 +13,11 @@ use {
 #[cfg(feature="parallel")]
 use rayon::iter::ParallelIterator;
 use ndarray::{Array1, Array2, Slice, Data, ArrayBase, Ix2, Axis};
+use crate::{
+	inversion::{SphericalInverterParams, SphericalInverter},
+	random::RandomPermutationGenerator,
+	types::HIOBFloat,
+};
 
 pub trait MatrixDataSource<T> {
 	fn n_rows(&self) -> usize;
@@ -105,11 +112,6 @@ impl<T: hdf5::H5Type+Copy+Zero+MaybeSend> MatrixDataSource<T> for hdf5::Dataset 
 
 
 
-
-#[cfg(feature="rust-hdf5")]
-pub trait CachingH5Type: H5Type+Zero+Copy+Clone+Send+'static {}
-#[cfg(feature="rust-hdf5")]
-impl<T: H5Type+Zero+Copy+Clone+Send+'static> CachingH5Type for T {}
 
 #[cfg(feature="rust-hdf5")]
 pub struct CachingH5Reader<T: CachingH5Type> {
@@ -211,6 +213,47 @@ pub fn store_h5_dataset<T: hdf5::H5Type>(file: &str, dataset: &str, data: &Array
 	dataset_builder.with_data(data).create(dataset)?;
 	Ok(())
 }
+
+
+pub struct DatasourcePermutationSampler<T: HIOBFloat, M: MatrixDataSource<T>> {
+	_phantom: PhantomData<T>,
+	pub data_source: M,
+	perm_gen: RandomPermutationGenerator,
+	pub inverter: Option<SphericalInverter<T>>,
+}
+impl<T: HIOBFloat, M: MatrixDataSource<T>> DatasourcePermutationSampler<T, M> {
+	pub fn new(data_source: M, perm_gen_rounds: Option<usize>) -> Self {
+		let perm_gen = RandomPermutationGenerator::new(data_source.n_rows(), perm_gen_rounds.unwrap_or(4));
+		Self {
+			_phantom: PhantomData,
+			data_source,
+			perm_gen,
+			inverter: None,
+		}
+	}
+	pub fn new_inversive(data_source: M, perm_gen_rounds: Option<usize>, n_invert_init_samples: usize, inverter_params: SphericalInverterParams<T>) -> Self {
+		let mut sampler = Self::new(data_source, perm_gen_rounds);
+		let inverter_init_sample = sampler.sample(n_invert_init_samples);
+		let inverter = SphericalInverter::new(&inverter_init_sample, inverter_params);
+		sampler.inverter = Some(inverter);
+		sampler
+	}
+	pub fn sample(&mut self, n_samples: usize) -> Array2<T> {
+		let idx = self.perm_gen.next_usizes(n_samples);
+		let mut sample = self.data_source.get_rows(&idx);
+		if self.inverter.is_some() {
+			sample = self.inverter.as_ref().unwrap().invert(&sample);
+		}
+		sample
+	}
+	pub fn view_data(&self) -> &M {
+		&self.data_source
+	}
+	pub fn get_n_data(&self) -> usize {
+		self.data_source.n_rows()
+	}
+}
+
 
 
 #[test]

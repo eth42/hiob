@@ -1,30 +1,10 @@
 #[cfg(feature="progressbars")]
 use indicatif::{ProgressBar, ProgressState, ProgressStyle};
 #[cfg(feature="progressbars")]
-use std::{fmt::Write};
+use std::fmt::Write;
 #[cfg(feature="parallel")]
 use rayon::prelude::*;
 use std::iter::{ExactSizeIterator, Iterator};
-
-
-macro_rules! trait_combiner {
-	($combination_name: ident) => {
-		pub trait $combination_name {}
-		impl<T> $combination_name for T {}
-	};
-	($combination_name: ident: $t: ident $(+ $ts: ident)*) => {
-		pub trait $combination_name: $t $(+ $ts)* {}
-		impl<T: $t $(+ $ts)*> $combination_name for T {}
-	};
-}
-#[cfg(feature="parallel")]
-trait_combiner!(MaybeSync: Sync);
-#[cfg(not(feature="parallel"))]
-trait_combiner!(MaybeSync);
-#[cfg(feature="parallel")]
-trait_combiner!(MaybeSend: Send);
-#[cfg(not(feature="parallel"))]
-trait_combiner!(MaybeSend);
 
 
 #[cfg(feature="progressbars")]

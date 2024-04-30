@@ -5,6 +5,7 @@ use std::{pin::Pin, marker::PhantomData};
 use futures::{prelude::*, executor::block_on};
 
 use crate::data::{MatrixDataSource, AsyncMatrixDataSource};
+use crate::types::CachingNumpyEquivalent;
 
 
 pub trait NumpyEquivalent: numpy::Element {
@@ -132,9 +133,6 @@ impl<T: NumpyEquivalent> MatrixDataSource<T> for H5PyDataset<T> {
 		row.unwrap()
 	}
 }
-
-pub trait CachingNumpyEquivalent: NumpyEquivalent+'static {}
-impl<T: NumpyEquivalent+'static> CachingNumpyEquivalent for T {}
 
 pub struct CachingH5PyReader<T: CachingNumpyEquivalent> {
 	_phantom: PhantomData<T>,

@@ -1,5 +1,10 @@
 #![allow(dead_code)]
 
+#[macro_use]
+pub mod types;
+pub mod vec_math;
+pub mod matrices;
+pub mod inversion;
 pub mod bit_vectors;
 pub mod float_vectors;
 pub mod binarizer;

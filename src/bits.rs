@@ -1,6 +1,6 @@
 use paste::paste;
 
-use crate::progress::{MaybeSend, MaybeSync};
+use crate::types::{MaybeSend, MaybeSync};
 
 pub trait Bits: Clone+Copy+MaybeSend+MaybeSync {
 	fn size() -> usize;

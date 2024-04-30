@@ -4,15 +4,15 @@ use ndarray::{Data, Ix2, ArrayBase, Axis, Array2};
 #[cfg(feature="parallel")]
 use rayon::iter::ParallelIterator;
 
-use crate::binarizer::{HIOBFloat, HIOBBits};
-// use crate::bits::{Bits};
-use crate::bit_vectors::{BitVector};
-use crate::bits::Bits;
-use crate::data::{MatrixDataSource};
-use crate::progress::{named_par_iter, MaybeSync, par_iter};
-use crate::float_vectors::{InnerProduct, DotProduct};
-// use crate::measures::{DotProduct, InnerProduct};
-use crate::heaps::{MaxHeap, MinHeap, GenericHeap};
+use crate::{
+	types::{HIOBFloat, HIOBBits, MaybeSync},
+	bit_vectors::BitVector,
+	bits::Bits,
+	data::MatrixDataSource,
+	progress::{named_par_iter, par_iter},
+	float_vectors::{InnerProduct, DotProduct},
+	heaps::{MaxHeap, MinHeap, GenericHeap}
+};
 #[cfg(feature="python")]
 use crate::pydata::H5PyDataset;
 

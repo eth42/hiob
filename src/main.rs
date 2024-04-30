@@ -1,6 +1,10 @@
 #![allow(dead_code)]
 
-
+#[macro_use]
+pub mod types;
+pub mod vec_math;
+pub mod matrices;
+pub mod inversion;
 pub mod bit_vectors;
 pub mod float_vectors;
 // mod measures;
@@ -32,10 +36,10 @@ fn main() {
 #[allow(dead_code)]
 #[cfg(feature="python")]
 fn manual_benchmark() {
-  use std::ops::{DivAssign};
+  use std::ops::DivAssign;
 	use pydata::H5PyDataset;
 	use crate::data::MatrixDataSource;
-	use crate::binarizer::StochasticHIOB;
+	use crate::binarizer::{HIOBParams, StochasticHIOB, StochasticHIOBParams};
 	let data_file = "pytest/sisap23challenge/data/clip768v2/300K/dataset.h5";
 	let data_set = "emb";
 	let data_loader: H5PyDataset<f32> = H5PyDataset::new(data_file, data_set);
@@ -51,20 +55,11 @@ fn manual_benchmark() {
 	println!("Building HIOB");
 	let mut hiob: StochasticHIOB<f32, u64, Array2<f32>> = StochasticHIOB::new(
 		data.clone(),
-		10_000,
 		128,
-		1024,
-		false,
-		None,
-		Some(0.1),
-		Some(init_centers),
-		None,
-		None,
-		Some(false),
-		Some(false),
-		None,
-		None,
-		None,
+		StochasticHIOBParams::new(),
+		HIOBParams::new()
+		.with_scale(0.1)
+		.with_centers(Some(init_centers)),
 	);
 	println!("Training HIOB");
 	hiob.run(10_000);

@@ -1,17 +1,78 @@
+#![allow(non_camel_case_types)]
 use pyo3::prelude::*;
 use numpy::{PyArray1,PyArray2,PyReadonlyArray1,PyReadonlyArray2,ToPyArray};
 use num::NumCast;
 use paste::paste;
 use ndarray::{Array2,OwnedRepr};
-use {pyo3::exceptions::PyValueError};
+use pyo3::exceptions::PyValueError;
 #[cfg(feature="half")]
 use half::f16;
 
-use crate::binarizer::{HIOB,StochasticHIOB};
+use crate::binarizer::{HIOB,StochasticHIOB,HIOBParams,StochasticHIOBParams};
 use crate::pydata::H5PyDataset;
 use crate::eval::BinarizationEvaluator;
 use crate::bit_vectors::BitVector;
 use crate::index::THX;
+
+
+macro_rules! get_gen {
+	($($obj: ident).+, $field: ident) => { paste! {
+		Ok($($obj).+.[<get_ $field>]())
+	}};
+	($($obj: ident).+, $field: ident => $cast: ty) => { paste! {
+		Ok(<$cast as NumCast>::from($($obj).+.[<get_ $field>]()).unwrap())
+	}};
+	($($obj: ident).+, $field: ident O=> $cast: ty) => { paste! {
+		Ok($($obj).+.[<get_ $field>]().map(|v| <$cast as NumCast>::from(v).unwrap()))
+	}};
+	($py: ident $($obj: ident).+, $field: ident) => { paste! {
+		$($obj).+.[<get_ $field>]().to_pyarray($py)
+	}};
+}
+macro_rules! set_gen {
+	($($obj: ident).+, $field: ident) => { paste! {
+		Ok($($obj).+.[<set_ $field>]($field))
+	}};
+	($($obj: ident).+, $field: ident => $cast: ty) => { paste! {
+		Ok($($obj).+.[<set_ $field>](<$cast as NumCast>::from($field).unwrap()))
+	}};
+	($($obj: ident).+, $field: ident O=> $cast: ty) => { paste! {
+		Ok($($obj).+.[<set_ $field>]($field.map(|v| <$cast as NumCast>::from(v).unwrap())))
+	}};
+	// (py $($obj: ident).+, $field: ident) => { paste! {
+	// 	$($obj).+.[<set_ $field>](i_center, &center.as_array());
+	// }};
+}
+// macro_rules! set_gen {
+// 	() => {};
+// 	/* @params value: int, ... */
+// 	(@$attribute: ident $field: ident: $type: ty $(, $($rest: tt)+)?) => {
+// 		paste! {
+// 			pub fn [<set_ $field>](&mut self, $field: $type) { self.$attribute.[<set_ $field>]($field) }
+// 		}
+// 		$(set_gen!($($rest)+);)?
+// 	};
+// 	/* params value: int, ... */
+// 	($attribute: ident $field: ident: $type: ty $(, $($rest: tt)+)?) => {
+// 		paste! {
+// 			pub fn [<set_ $field>](&mut self, $field: $type) { self.$attribute.$field = $field }
+// 		}
+// 		$(set_gen!($($rest)+);)?
+// 	};
+// 	/* value: int, ... */
+// 	($field: ident: $type: ty $(, $($rest: tt)+)?) => {
+// 		paste! {
+// 			pub fn [<set_ $field>](&mut self, $field: $type) { self.$field = $field }
+// 		}
+// 		$(set_gen!($($rest)+);)?
+// 	};
+// }
+// macro_rules! get_set_gen {
+// 	($($rest: tt)+) => {
+// 		get_gen!($($rest)+);
+// 		set_gen!($($rest)+);
+// 	};
+// }
 
 
 macro_rules! hiob_struct_gen {
@@ -47,19 +108,16 @@ macro_rules! hiob_struct_gen {
 					Self{hiob: HIOB::new(
 						data.as_array().into_owned(),
 						n_bits,
-						affine,
-						scale.map(|v| <$prec_type as NumCast>::from(v).unwrap()),
-						if centers.is_some() {
-							Some(centers.unwrap().as_array().into_owned())
-						} else { None },
-						if center_biases.is_some() {
-							Some(center_biases.unwrap().as_array().into_owned())
-						} else { None },
-						balance_regression_factor.map(|v| <$prec_type as NumCast>::from(v).unwrap()),
-						init_greedy,
-						init_ransac,
-						ransac_pairs_per_bit,
-						ransac_sub_sample
+						HIOBParams::new()
+						.with_affine(affine)
+						.maybe_with_scale(scale.map(|v| <$prec_type as NumCast>::from(v).unwrap()))
+						.with_centers(centers.map(|v| v.as_array().into_owned()))
+						.with_center_biases(center_biases.map(|v| v.as_array().into_owned()))
+						.maybe_with_balance_regression_factor(balance_regression_factor.map(|v| <$prec_type as NumCast>::from(v).unwrap()))
+						.maybe_with_init_greedy(init_greedy)
+						.maybe_with_init_ransac(init_ransac)
+						.maybe_with_ransac_pairs_per_bit(ransac_pairs_per_bit)
+						.maybe_with_ransac_sub_sample(ransac_sub_sample)
 					)}
 				}
 				pub fn run(&mut self, n_iterations: usize) {
@@ -78,47 +136,47 @@ macro_rules! hiob_struct_gen {
 				}
 				#[getter]
 				pub fn get_n_data(&self) -> PyResult<usize> {
-					Ok(self.hiob.get_n_data())
+					get_gen!(self.hiob, n_data)
 				}
 				#[getter]
 				pub fn get_n_dims(&self) -> PyResult<usize> {
-					Ok(self.hiob.get_n_dims())
+					get_gen!(self.hiob, n_dims)
 				}
 				#[getter]
 				pub fn get_n_bits(&self) -> PyResult<usize> {
-					Ok(self.hiob.get_n_bits())
+					get_gen!(self.hiob, n_bits)
 				}
 				#[getter]
 				pub fn get_scale(&self) -> PyResult<f64> {
-					Ok(<f64 as NumCast>::from(self.hiob.get_scale()).unwrap())
+					get_gen!(self.hiob, scale => f64)
 				}
 				#[setter]
 				pub fn set_scale(&mut self, scale: f64) -> PyResult<()> {
-					Ok(self.hiob.set_scale(<$prec_type as NumCast>::from(scale).unwrap()))
+					set_gen!(self.hiob, scale => $prec_type)
 				}
 				#[getter]
 				pub fn get_balance_regression_factor(&self) -> PyResult<f64> {
-					Ok(<f64 as NumCast>::from(self.hiob.get_balance_regression_factor()).unwrap())
+					get_gen!(self.hiob, balance_regression_factor => f64)
 				}
 				#[setter]
 				pub fn set_balance_regression_factor(&mut self, balance_regression_factor: f64) -> PyResult<()> {
-					Ok(self.hiob.set_balance_regression_factor(<$prec_type as NumCast>::from(balance_regression_factor).unwrap()))
+					set_gen!(self.hiob, balance_regression_factor => $prec_type)
 				}
 				#[getter]
 				pub fn get_data<'py>(&self, py: Python<'py>) -> &'py PyArray2<$prec_type> {
-					self.hiob.get_data().to_pyarray(py)
+					get_gen!(py self.hiob, data)
 				}
 				#[getter]
 				pub fn get_centers<'py>(&self, py: Python<'py>) -> &'py PyArray2<$prec_type> {
-					self.hiob.get_centers().to_pyarray(py)
+					get_gen!(py self.hiob, centers)
 				}
 				#[getter]
 				pub fn get_is_affine(&self) -> PyResult<bool> {
-					Ok(self.hiob.get_is_affine())
+					get_gen!(self.hiob, affine)
 				}
 				#[getter]
 				pub fn get_center_biases<'py>(&self, py: Python<'py>) -> &'py PyArray1<$prec_type> {
-					self.hiob.get_center_biases().to_pyarray(py)
+					get_gen!(py self.hiob, center_biases)
 				}
 				pub fn set_center(&mut self, i_center: usize, center: PyReadonlyArray1<$prec_type>) {
 					self.hiob.set_center(i_center, &center.as_array());
@@ -135,31 +193,31 @@ macro_rules! hiob_struct_gen {
 				// }
 				#[getter]
 				pub fn get_overlap_mat<'py>(&self, py: Python<'py>) -> &'py PyArray2<usize> {
-					self.hiob.get_overlap_mat().to_pyarray(py)
+					get_gen!(py self.hiob, overlap_mat)
 				}
 				#[getter]
 				pub fn get_sim_mat<'py>(&self, py: Python<'py>) -> &'py PyArray2<f64> {
-					self.hiob.get_sim_mat().to_pyarray(py)
+					get_gen!(py self.hiob, sim_mat)
 				}
 				#[getter]
 				pub fn get_sim_sums<'py>(&self, py: Python<'py>) -> &'py PyArray1<f64> {
-					self.hiob.get_sim_sums().to_pyarray(py)
+					get_gen!(py self.hiob, sim_sums)
 				}
 				#[getter]
 				pub fn get_update_parallel(&self) -> PyResult<bool> {
-					Ok(self.hiob.get_update_parallel())
+					get_gen!(self.hiob, update_parallel)
 				}
 				#[setter]
-				pub fn set_update_parallel(&mut self, b: bool) -> PyResult<()> {
-					Ok(self.hiob.set_update_parallel(b))
+				pub fn set_update_parallel(&mut self, update_parallel: bool) -> PyResult<()> {
+					set_gen!(self.hiob, update_parallel)
 				}
 				#[getter]
 				pub fn get_displace_parallel(&self) -> PyResult<bool> {
-					Ok(self.hiob.get_displace_parallel())
+					get_gen!(self.hiob, displace_parallel)
 				}
 				#[setter]
-				pub fn set_displace_parallel(&mut self, b: bool) -> PyResult<()> {
-					Ok(self.hiob.set_displace_parallel(b))
+				pub fn set_displace_parallel(&mut self, displace_parallel: bool) -> PyResult<()> {
+					set_gen!(self.hiob, displace_parallel)
 				}
 			}
 		}
@@ -204,10 +262,12 @@ macro_rules! stochastic_hiob_struct_gen {
 				pub fn new(
 					file: String,
 					dataset: String,
-					sample_size: usize,
-					its_per_sample: usize,
 					n_bits: usize,
-					affine: bool,
+					sample_size: Option<usize>,
+					its_per_sample: Option<usize>,
+					affine: Option<bool>,
+					inversive: Option<bool>,
+					n_inverter_init_samples: Option<usize>,
 					perm_gen_rounds: Option<usize>,
 					scale: Option<f64>,
 					centers: Option<PyReadonlyArray2<$prec_type>>,
@@ -215,31 +275,41 @@ macro_rules! stochastic_hiob_struct_gen {
 					balance_regression_factor: Option<f64>,
 					init_greedy: Option<bool>,
 					init_ransac: Option<bool>,
+					init_itq: Option<bool>,
 					ransac_pairs_per_bit: Option<usize>,
 					ransac_sub_sample: Option<usize>,
+					itq_central: Option<bool>,
+					itq_iterations: Option<usize>,
 					noise_std: Option<f64>,
+					update_parallel: Option<bool>,
+					displace_parallel: Option<bool>,
 				) -> PyResult<Self> {
 					let data_source = H5PyDataset::<$prec_type>::new(file.as_str(), dataset.as_str());
 					Ok(Self{shiob: StochasticHIOB::new(
 						data_source,
-						sample_size,
-						its_per_sample,
 						n_bits,
-						affine,
-						perm_gen_rounds,
-						scale.map(|v| <$prec_type as NumCast>::from(v).unwrap()),
-						if centers.is_some() {
-							Some(centers.unwrap().as_array().into_owned())
-						} else { None },
-						if center_biases.is_some() {
-							Some(center_biases.unwrap().as_array().into_owned())
-						} else { None },
-						balance_regression_factor.map(|v| <$prec_type as NumCast>::from(v).unwrap()),
-						init_greedy,
-						init_ransac,
-						ransac_pairs_per_bit,
-						ransac_sub_sample,
-						noise_std.map(|v| <$prec_type as NumCast>::from(v).unwrap())
+						StochasticHIOBParams::new()
+						.maybe_with_sample_size(sample_size)
+						.maybe_with_its_per_sample(its_per_sample)
+						.maybe_with_inversive(inversive)
+						.maybe_with_n_inverter_init_samples(n_inverter_init_samples)
+						.maybe_with_perm_gen_rounds(perm_gen_rounds)
+						.with_noise_std(noise_std.map(|v| <$prec_type as NumCast>::from(v).unwrap())),
+						HIOBParams::new()
+						.maybe_with_affine(affine)
+						.maybe_with_scale(scale.map(|v| <$prec_type as NumCast>::from(v).unwrap()))
+						.with_centers(centers.map(|v| v.as_array().into_owned()))
+						.with_center_biases(center_biases.map(|v| v.as_array().into_owned()))
+						.maybe_with_balance_regression_factor(balance_regression_factor.map(|v| <$prec_type as NumCast>::from(v).unwrap()))
+						.maybe_with_init_greedy(init_greedy)
+						.maybe_with_init_ransac(init_ransac)
+						.maybe_with_init_itq(init_itq)
+						.maybe_with_ransac_pairs_per_bit(ransac_pairs_per_bit)
+						.maybe_with_ransac_sub_sample(ransac_sub_sample)
+						.maybe_with_itq_central(itq_central)
+						.maybe_with_itq_iterations(itq_iterations)
+						.maybe_with_update_parallel(update_parallel)
+						.maybe_with_displace_parallel(displace_parallel),
 					)})
 				}
 			}
@@ -258,10 +328,12 @@ macro_rules! stochastic_hiob_struct_gen {
 				#[new]
 				pub fn new(
 					data: PyReadonlyArray2<$prec_type>,
-					sample_size: usize,
-					its_per_sample: usize,
 					n_bits: usize,
-					affine: bool,
+					sample_size: Option<usize>,
+					its_per_sample: Option<usize>,
+					affine: Option<bool>,
+					inversive: Option<bool>,
+					n_inverter_init_samples: Option<usize>,
 					perm_gen_rounds: Option<usize>,
 					scale: Option<f64>,
 					centers: Option<PyReadonlyArray2<$prec_type>>,
@@ -269,30 +341,40 @@ macro_rules! stochastic_hiob_struct_gen {
 					balance_regression_factor: Option<f64>,
 					init_greedy: Option<bool>,
 					init_ransac: Option<bool>,
+					init_itq: Option<bool>,
 					ransac_pairs_per_bit: Option<usize>,
 					ransac_sub_sample: Option<usize>,
+					itq_central: Option<bool>,
+					itq_iterations: Option<usize>,
 					noise_std: Option<f64>,
+					update_parallel: Option<bool>,
+					displace_parallel: Option<bool>,
 				) -> PyResult<Self> {
 					Ok(Self{shiob: StochasticHIOB::new(
 						data.as_array().into_owned(),
-						sample_size,
-						its_per_sample,
 						n_bits,
-						affine,
-						perm_gen_rounds,
-						scale.map(|v| <$prec_type as NumCast>::from(v).unwrap()),
-						if centers.is_some() {
-							Some(centers.unwrap().as_array().into_owned())
-						} else { None },
-						if center_biases.is_some() {
-							Some(center_biases.unwrap().as_array().into_owned())
-						} else { None },
-						balance_regression_factor.map(|v| <$prec_type as NumCast>::from(v).unwrap()),
-						init_greedy,
-						init_ransac,
-						ransac_pairs_per_bit,
-						ransac_sub_sample,
-						noise_std.map(|v| <$prec_type as NumCast>::from(v).unwrap()),
+						StochasticHIOBParams::new()
+						.maybe_with_sample_size(sample_size)
+						.maybe_with_its_per_sample(its_per_sample)
+						.maybe_with_inversive(inversive)
+						.maybe_with_n_inverter_init_samples(n_inverter_init_samples)
+						.maybe_with_perm_gen_rounds(perm_gen_rounds)
+						.with_noise_std(noise_std.map(|v| <$prec_type as NumCast>::from(v).unwrap())),
+						HIOBParams::new()
+						.maybe_with_affine(affine)
+						.maybe_with_scale(scale.map(|v| <$prec_type as NumCast>::from(v).unwrap()))
+						.with_centers(centers.map(|v| v.as_array().into_owned()))
+						.with_center_biases(center_biases.map(|v| v.as_array().into_owned()))
+						.maybe_with_balance_regression_factor(balance_regression_factor.map(|v| <$prec_type as NumCast>::from(v).unwrap()))
+						.maybe_with_init_greedy(init_greedy)
+						.maybe_with_init_ransac(init_ransac)
+						.maybe_with_init_itq(init_itq)
+						.maybe_with_ransac_pairs_per_bit(ransac_pairs_per_bit)
+						.maybe_with_ransac_sub_sample(ransac_sub_sample)
+						.maybe_with_itq_central(itq_central)
+						.maybe_with_itq_iterations(itq_iterations)
+						.maybe_with_update_parallel(update_parallel)
+						.maybe_with_displace_parallel(displace_parallel),
 					)})
 				}
 			}
@@ -305,6 +387,9 @@ macro_rules! stochastic_hiob_struct_gen {
 			impl [<StochasticHIOB_ $datasource _ $prec_type _ $bin_type>] {
 				pub fn run(&mut self, n_iterations: usize) {
 					self.shiob.run(n_iterations);
+				}
+				pub fn get_inversive_balls<'py>(&self, py: Python<'py>) -> Option<(&'py PyArray2<$prec_type>, &'py PyArray1<$prec_type>)> {
+					self.shiob.get_inversive_balls().map(|(a,b)| (a.to_pyarray(py), b.to_pyarray(py)))
 				}
 				pub fn binarize<'py>(&self, py: Python<'py>, queries: PyReadonlyArray2<$prec_type>) -> &'py PyArray2<$bin_type> {
 					self.shiob.binarize(&queries.as_array()).to_pyarray(py)
@@ -319,63 +404,67 @@ macro_rules! stochastic_hiob_struct_gen {
 				}
 				#[getter]
 				pub fn get_sample_size(&self) -> PyResult<usize> {
-					Ok(self.shiob.get_sample_size())
+					get_gen!(self.shiob, sample_size)
 				}
 				#[setter]
-				pub fn set_sample_size(&mut self, value: usize) -> PyResult<()> {
-					self.shiob.set_sample_size(value); Ok(())
+				pub fn set_sample_size(&mut self, sample_size: usize) -> PyResult<()> {
+					set_gen!(self.shiob, sample_size)
 				}
 				#[getter]
 				pub fn get_its_per_sample(&self) -> PyResult<usize> {
-					Ok(self.shiob.get_its_per_sample())
+					get_gen!(self.shiob, its_per_sample)
 				}
 				#[setter]
-				pub fn set_its_per_sample(&mut self, value: usize) -> PyResult<()> {
-					self.shiob.set_its_per_sample(value); Ok(())
+				pub fn set_its_per_sample(&mut self, its_per_sample: usize) -> PyResult<()> {
+					set_gen!(self.shiob, its_per_sample)
 				}
 				#[getter]
-				pub fn get_n_samples(&self) -> PyResult<usize> {
-					Ok(self.shiob.get_n_samples())
+				pub fn get_n_data(&self) -> PyResult<usize> {
+					get_gen!(self.shiob, n_data)
 				}
 				#[getter]
 				pub fn get_n_dims(&self) -> PyResult<usize> {
-					Ok(self.shiob.get_n_dims())
+					get_gen!(self.shiob, n_dims)
 				}
 				#[getter]
 				pub fn get_n_bits(&self) -> PyResult<usize> {
-					Ok(self.shiob.get_n_bits())
+					get_gen!(self.shiob, n_bits)
 				}
 				#[getter]
 				pub fn get_scale(&self) -> PyResult<f64> {
-					Ok(<f64 as NumCast>::from(self.shiob.get_scale()).unwrap())
+					get_gen!(self.shiob, scale => f64)
 				}
 				#[setter]
 				pub fn set_scale(&mut self, scale: f64) -> PyResult<()> {
-					Ok(self.shiob.set_scale(<$prec_type as NumCast>::from(scale).unwrap()))
+					set_gen!(self.shiob, scale => $prec_type)
 				}
 				#[getter]
 				pub fn get_balance_regression_factor(&self) -> PyResult<f64> {
-					Ok(<f64 as NumCast>::from(self.shiob.get_balance_regression_factor()).unwrap())
+					get_gen!(self.shiob, balance_regression_factor => f64)
 				}
 				#[setter]
 				pub fn set_balance_regression_factor(&mut self, balance_regression_factor: f64) -> PyResult<()> {
-					Ok(self.shiob.set_balance_regression_factor(<$prec_type as NumCast>::from(balance_regression_factor).unwrap()))
+					set_gen!(self.shiob, balance_regression_factor => $prec_type)
 				}
 				#[getter]
 				pub fn get_data<'py>(&self, py: Python<'py>) -> &'py PyArray2<$prec_type> {
-					self.shiob.get_data().to_pyarray(py)
+					get_gen!(py self.shiob, data)
 				}
 				#[getter]
 				pub fn get_centers<'py>(&self, py: Python<'py>) -> &'py PyArray2<$prec_type> {
-					self.shiob.get_centers().to_pyarray(py)
+					get_gen!(py self.shiob, centers)
 				}
 				#[getter]
-				pub fn get_is_affine(&self) -> PyResult<bool> {
-					Ok(self.shiob.get_is_affine())
+				pub fn get_affine(&self) -> PyResult<bool> {
+					get_gen!(self.shiob, affine)
+				}
+				#[getter]
+				pub fn get_inversive(&self) -> PyResult<bool> {
+					get_gen!(self.shiob, inversive)
 				}
 				#[getter]
 				pub fn get_center_biases<'py>(&self, py: Python<'py>) -> &'py PyArray1<$prec_type> {
-					self.shiob.get_center_biases().to_pyarray(py)
+					get_gen!(py self.shiob, center_biases)
 				}
 				pub fn set_center(&mut self, i_center: usize, center: PyReadonlyArray1<$prec_type>) {
 					self.shiob.set_center(i_center, &center.as_array());
@@ -392,40 +481,39 @@ macro_rules! stochastic_hiob_struct_gen {
 				// }
 				#[getter]
 				pub fn get_overlap_mat<'py>(&self, py: Python<'py>) -> &'py PyArray2<usize> {
-					self.shiob.get_overlap_mat().to_pyarray(py)
+					get_gen!(py self.shiob, overlap_mat)
 				}
 				#[getter]
 				pub fn get_sim_mat<'py>(&self, py: Python<'py>) -> &'py PyArray2<f64> {
-					self.shiob.get_sim_mat().to_pyarray(py)
+					get_gen!(py self.shiob, sim_mat)
 				}
 				#[getter]
 				pub fn get_sim_sums<'py>(&self, py: Python<'py>) -> &'py PyArray1<f64> {
-					self.shiob.get_sim_sums().to_pyarray(py)
+					get_gen!(py self.shiob, sim_sums)
 				}
 				#[getter]
 				pub fn get_update_parallel(&self) -> PyResult<bool> {
-					Ok(self.shiob.get_update_parallel())
+					get_gen!(self.shiob, update_parallel)
 				}
 				#[setter]
-				pub fn set_update_parallel(&mut self, b: bool) -> PyResult<()> {
-					Ok(self.shiob.set_update_parallel(b))
+				pub fn set_update_parallel(&mut self, update_parallel: bool) -> PyResult<()> {
+					set_gen!(self.shiob, update_parallel)
 				}
 				#[getter]
 				pub fn get_displace_parallel(&self) -> PyResult<bool> {
-					Ok(self.shiob.get_displace_parallel())
+					get_gen!(self.shiob, displace_parallel)
 				}
 				#[setter]
-				pub fn set_displace_parallel(&mut self, b: bool) -> PyResult<()> {
-					Ok(self.shiob.set_displace_parallel(b))
+				pub fn set_displace_parallel(&mut self, displace_parallel: bool) -> PyResult<()> {
+					set_gen!(self.shiob, displace_parallel)
 				}
 				#[getter]
 				pub fn get_noise_std(&self) -> PyResult<Option<f64>> {
-					Ok(self.shiob.get_noise_std().map(|v| <f64 as NumCast>::from(v).unwrap()))
+					get_gen!(self.shiob, noise_std O=> f64)
 				}
 				#[setter]
-				pub fn set_noise_std(&mut self, value: Option<f64>) -> PyResult<()> {
-					self.shiob.set_noise_std(value.map(|v| <$prec_type as NumCast>::from(v).unwrap()));
-					Ok(())
+				pub fn set_noise_std(&mut self, noise_std: Option<f64>) -> PyResult<()> {
+					set_gen!(self.shiob, noise_std O=> $prec_type)
 				}
 			}
 		}

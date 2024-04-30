@@ -4,6 +4,10 @@
 /pytest
 /python/hiob/*.so
 /python/hiob/__pycache__
+tmp
+*.svg
+*.old
+benchmark_main.rs
 
 # Ignore Cargo.lock because this is a library and not a binary
 Cargo.lock

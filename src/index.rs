@@ -1,12 +1,13 @@
 use ndarray::{Data, ArrayBase, Ix1, Ix2, Array1, Array2, Axis};
-use probability::{distribution::{Binomial}, prelude::Distribution};
+use probability::{distribution::Binomial, prelude::Distribution};
 
 #[cfg(feature="parallel")]
 use rayon::iter::ParallelIterator;
 
 use crate::{
 	bits::Bits,
-	bit_vectors::BitVector, progress::{par_iter, MaybeSend, MaybeSync},
+	types::{MaybeSend, MaybeSync},
+	bit_vectors::BitVector, progress::par_iter,
 	heaps::{GenericHeap,MinHeap,MaxHeap}
 };
 
@@ -332,7 +333,7 @@ impl<const FANOUT: usize> THXNode<FANOUT> {
 #[test]
 fn test_thx_init() {
 	use ndarray_rand::rand::random;
-	use ndarray::{Array2};
+	use ndarray::Array2;
 	type T = u16;
 	const FANOUT: usize = 8;
 	let arr2: Array2<T> = Array2::from_shape_simple_fn([20000,16], random) % T::MAX;
@@ -370,7 +371,7 @@ fn test_thx_init() {
 #[test]
 fn test_thx_query() {
 	use ndarray_rand::rand::random;
-	use ndarray::{Array2};
+	use ndarray::Array2;
 	type T = u32;
 	const FANOUT: usize = 4;
 	let arr2: Array2<T> = Array2::from_shape_simple_fn([200000,32], random) % T::MAX;
