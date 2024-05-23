@@ -2,7 +2,6 @@ use ndarray::{Array1, Array2, Axis, Slice, Data, ArrayBase, Ix1, Ix2};
 use crate::types::HIOBFloat;
 use crate::float_vectors::{DotProduct, InnerProduct};
 use crate::vec_math::{vec_norm, vec_norms, vec_sq_norms};
-use paste::paste;
 
 /* Create logarithmically spaced grid */
 fn _log_grid<F: HIOBFloat>(start: F, end: F, n: usize) -> Vec<F> {

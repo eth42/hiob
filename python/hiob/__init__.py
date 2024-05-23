@@ -1,5 +1,5 @@
 from .hiob import *
-from .hiob import RawBinarizationEvaluator
+from .hiob import RawBinarizationEvaluator, supports_f16
 import numpy as np
 
 def _float_type_name(float_type):
@@ -114,6 +114,9 @@ class StochasticHIOB:
 		affine: bool = False,
 		inversive: bool = False,
 		n_inverter_init_samples: int = None,
+		kernelized: bool = False,
+		kernel_reshape: list = None,
+		kernel_width: int = None,
 		input_type: type = np.float32,
 		output_type: type = np.uint64,
 		perm_gen_rounds: int = None,
@@ -131,6 +134,7 @@ class StochasticHIOB:
 		update_parallel: bool = None,
 		displace_parallel: bool = None,
 		noise_std: float = None,
+		pre_noise: bool = None,
 	):
 		if n_bits < 1:
 			raise ValueError("The number of bits should be at least 1.")
@@ -151,6 +155,9 @@ class StochasticHIOB:
 			affine=affine,
 			inversive=inversive,
 			n_inverter_init_samples=n_inverter_init_samples,
+			kernelized=kernelized,
+			kernel_reshape=kernel_reshape,
+			kernel_width=kernel_width,
 			perm_gen_rounds=perm_gen_rounds,
 			scale=scale,
 			centers=None if centers is None else centers.astype(self._input_type),
@@ -164,6 +171,7 @@ class StochasticHIOB:
 			itq_central=itq_central,
 			itq_iterations=itq_iterations,
 			noise_std=noise_std,
+			pre_noise=pre_noise,
 			update_parallel=update_parallel,
 			displace_parallel=displace_parallel,
 		)
@@ -177,6 +185,9 @@ class StochasticHIOB:
 		affine: bool = False,
 		inversive: bool = False,
 		n_inverter_init_samples: int = None,
+		kernelized: bool = False,
+		kernel_reshape: list = None,
+		kernel_width: int = None,
 		output_type: type = np.uint64,
 		perm_gen_rounds: int = None,
 		scale: float = None,
@@ -193,6 +204,7 @@ class StochasticHIOB:
 		update_parallel: bool = None,
 		displace_parallel: bool = None,
 		noise_std: float = None,
+		pre_noise: bool = None,
 	):
 		if n_bits < 1:
 			raise ValueError("The number of bits should be at least 1.")
@@ -212,6 +224,9 @@ class StochasticHIOB:
 			affine=affine,
 			inversive=inversive,
 			n_inverter_init_samples=n_inverter_init_samples,
+			kernelized=kernelized,
+			kernel_reshape=kernel_reshape,
+			kernel_width=kernel_width,
 			perm_gen_rounds=perm_gen_rounds,
 			scale=scale,
 			centers=None if centers is None else centers.astype(self._input_type),
@@ -225,6 +240,7 @@ class StochasticHIOB:
 			itq_central=itq_central,
 			itq_iterations=itq_iterations,
 			noise_std=noise_std,
+			pre_noise=pre_noise,
 			update_parallel=update_parallel,
 			displace_parallel=displace_parallel,
 		)

@@ -13,16 +13,7 @@ use rand::thread_rng;
 use rayon::iter::ParallelIterator;
 
 use crate::{
-	bit_vectors::{BitVector, BitVectorMut},
-	data::{DatasourcePermutationSampler, MatrixDataSource},
-	float_vectors::{DotProduct, InnerProduct, SqEuclidean, VectorDistance},
-	inversion::{cap_to_ball, SphericalInverterParams},
-	matrices::SymArgmaxMatrix,
-	random::RandomPermutationGenerator,
-	bits::Bits,
-	progress::{named_range, par_iter},
-	vec_math::vec_norm,
-	types::{HIOBBits, HIOBFloat, MaybeSync}
+	bit_vectors::{BitVector, BitVectorMut}, bits::Bits, data::{DPSParams, DatasourcePermutationSampler, MatrixDataSource}, float_vectors::{DotProduct, InnerProduct, SqEuclidean, VectorDistance}, inversion::{cap_to_ball, SphericalInverterParams}, matrices::SymArgmaxMatrix, progress::{named_range, par_iter}, random::RandomPermutationGenerator, types::{HIOBBits, HIOBFloat, MaybeSync}, vec_math::vec_norm
 };
 #[cfg(feature="python")]
 use {
@@ -547,8 +538,12 @@ crate::types::param_struct!(StochasticHIOBParams[Clone]<F: HIOBFloat> {
 	its_per_sample: usize = 200,
 	inversive: bool = false,
 	n_inverter_init_samples: usize = 2000,
+	kernelized: bool = false,
+	kernel_reshape: Vec<usize> = vec![0;0],
+	kernel_width: usize = 3,
 	perm_gen_rounds: usize = 4,
 	noise_std: Option<F> = None,
+	pre_noise: bool = true,
 });
 pub struct StochasticHIOB<F: HIOBFloat, B: HIOBBits, D: MatrixDataSource<F>> where Array1<B>: BitVectorMut {
 	wrapped_hiob: HIOB<F,B>,
@@ -558,20 +553,48 @@ pub struct StochasticHIOB<F: HIOBFloat, B: HIOBBits, D: MatrixDataSource<F>> whe
 }
 impl<F: HIOBFloat, B: HIOBBits, D: MatrixDataSource<F>> StochasticHIOB<F,B,D> where Array1<B>: BitVectorMut {
 	pub fn new(data_source: D, n_bits: usize, params: StochasticHIOBParams<F>, hiob_params: HIOBParams<F>) -> Self {
-		let mut data_sampler = if params.inversive {
-			DatasourcePermutationSampler::new_inversive(data_source, Some(params.perm_gen_rounds), params.n_inverter_init_samples, SphericalInverterParams::new())
+		let mut data_sampler = if params.inversive && params.kernelized {
+			DatasourcePermutationSampler::new_inversive_kernel(
+				data_source,
+				DPSParams::new()
+				.with_noise_std(params.noise_std.clone())
+				.with_pre_noise(params.pre_noise)
+				.with_perm_gen_rounds(Some(params.perm_gen_rounds))
+				.with_n_invert_init_samples(params.n_inverter_init_samples)
+				.with_reshape(Some(params.kernel_reshape.clone()))
+				.with_kernel_width(Some(params.kernel_width)),
+				SphericalInverterParams::new()
+			)
+		} else if params.inversive {
+			DatasourcePermutationSampler::new_inversive(
+				data_source,
+				DPSParams::new()
+				.with_noise_std(params.noise_std.clone())
+				.with_pre_noise(params.pre_noise)
+				.with_perm_gen_rounds(Some(params.perm_gen_rounds))
+				.with_n_invert_init_samples(params.n_inverter_init_samples),
+				SphericalInverterParams::new()
+			)
+		} else if params.kernelized {
+			DatasourcePermutationSampler::new_kernel(
+				data_source,
+				DPSParams::new()
+				.with_noise_std(params.noise_std.clone())
+				.with_pre_noise(params.pre_noise)
+				.with_perm_gen_rounds(Some(params.perm_gen_rounds))
+				.with_reshape(Some(params.kernel_reshape.clone()))
+				.with_kernel_width(Some(params.kernel_width)),
+			)
 		} else {
-			DatasourcePermutationSampler::new(data_source, Some(params.perm_gen_rounds))
+			DatasourcePermutationSampler::new(
+				data_source,
+				DPSParams::new()
+				.with_noise_std(params.noise_std.clone())
+				.with_pre_noise(params.pre_noise)
+				.with_perm_gen_rounds(Some(params.perm_gen_rounds)),
+			)
 		};
-		let mut initial_data = data_sampler.sample(params.sample_size);
-		if params.noise_std.is_some() {
-			let mut rng = thread_rng();
-			let normal: Normal<f64> = Normal::new(
-				0.,
-				params.noise_std.unwrap().to_f64().unwrap()
-			).unwrap();
-			initial_data.mapv_inplace(|v| v + F::from(normal.sample(&mut rng)).unwrap());
-		}
+		let initial_data = data_sampler.sample(params.sample_size);
 		StochasticHIOB {
 			wrapped_hiob: HIOB::new(
 				initial_data,
@@ -586,15 +609,7 @@ impl<F: HIOBFloat, B: HIOBBits, D: MatrixDataSource<F>> StochasticHIOB<F,B,D> wh
 
 	pub fn step(&mut self) {
 		if self.current_it >= self.params.its_per_sample {
-			let mut new_sample = self.data_sampler.sample(self.params.sample_size);
-			if self.params.noise_std.is_some() {
-				let mut rng = thread_rng();
-				let normal: Normal<f64> = Normal::new(
-					0.,
-					self.params.noise_std.unwrap().to_f64().unwrap()
-				).unwrap();
-				new_sample.mapv_inplace(|v| v + F::from(normal.sample(&mut rng)).unwrap());
-			}
+			let new_sample = self.data_sampler.sample(self.params.sample_size);
 			self.wrapped_hiob = HIOB::new(
 				new_sample,
 				self.wrapped_hiob.n_bits,
@@ -622,7 +637,9 @@ impl<F: HIOBFloat, B: HIOBBits, D: MatrixDataSource<F>> StochasticHIOB<F,B,D> wh
 			let d = normals.shape()[1];
 			let mut centers = Array2::from_elem([self.wrapped_hiob.n_bits, d-1], F::zero());
 			let mut sq_radii = Array1::from_elem(self.wrapped_hiob.n_bits, F::zero());
-			let scale = self.data_sampler.inverter.as_ref().unwrap().scale;
+			let inverter = self.data_sampler.inverter.as_ref().unwrap();
+			let scale = inverter.scale;
+			let inverter_shift = inverter.shift.as_ref().map(|a| a.clone()).unwrap_or(Array1::from_elem(d-1, F::zero()));
 			par_iter(
 				centers.axis_iter_mut(Axis(0))
 				.zip(sq_radii.iter_mut())
@@ -631,7 +648,7 @@ impl<F: HIOBFloat, B: HIOBBits, D: MatrixDataSource<F>> StochasticHIOB<F,B,D> wh
 			)
 			.for_each(|(((mut center, sq_radius), normal), bias)| {
 				let (lcenter, lsq_radius) = cap_to_ball(&normal, *bias, scale);
-				center.assign(&lcenter);
+				center.assign(&(lcenter+&inverter_shift));
 				*sq_radius = lsq_radius;
 			});
 			Some((centers, sq_radii))
@@ -687,20 +704,25 @@ impl<F: HIOBFloat, B: HIOBBits, D: MatrixDataSource<F>> StochasticHIOB<F,B,D> wh
 	get_gen!(
 		@data_sampler n_data: usize, @wrapped_hiob n_dims: usize, @wrapped_hiob n_bits: usize,
 		@wrapped_hiob affine: bool, @wrapped_hiob init_greedy: bool, @wrapped_hiob init_ransac: bool,
-		params n_inverter_init_samples: usize, current_it: usize
+		params n_inverter_init_samples: usize, current_it: usize,
+		params perm_gen_rounds: usize, params inversive: bool, params kernelized: bool,
+		params kernel_width: usize
 		/* , wrapped_hiob: HIOB<F,B> */
 	);
 	get_set_gen!(
 		@wrapped_hiob scale: F, @wrapped_hiob balance_regression_factor: F,
 		@wrapped_hiob update_parallel: bool, @wrapped_hiob displace_parallel: bool,
-		params sample_size: usize, params its_per_sample: usize, params inversive: bool,
-		params perm_gen_rounds: usize, params noise_std: Option<F>
+		params sample_size: usize, params its_per_sample: usize,
+		params noise_std: Option<F>
 	);
 	get_view_gen!(
 		@wrapped_hiob data: 2 F, @wrapped_hiob centers: 2 F, @wrapped_hiob center_biases: 1 F,
 		// data_bins: 2 B,
 		@wrapped_hiob overlap_mat: 2 usize, @wrapped_hiob sim_mat: 2 f64, @wrapped_hiob sim_sums: 1 f64
 	);
+	pub fn get_inverter_scale(&self) -> Option<F> { self.data_sampler.inverter.as_ref().map(|a| a.scale) }
+	pub fn get_inverter_shift(&self) -> Option<Array1<F>> { self.data_sampler.inverter.as_ref().map(|a| a.shift.as_ref().unwrap().clone()) }
+	pub fn get_kernel_reshape(&self) -> Vec<usize> { self.params.kernel_reshape.clone() }
 	pub fn set_center<D2: Data<Elem=F>>(&mut self, i_center: usize, center: &ArrayBase<D2, Ix1>) { self.wrapped_hiob.set_center(i_center, center); }
 	pub fn set_bias(&mut self, i_center: usize, bias: F) { self.wrapped_hiob.set_bias(i_center, bias); }
 	pub fn set_center_bias<D2: Data<Elem=F>>(&mut self, i_center: usize, center: &ArrayBase<D2, Ix1>, bias: F) { self.wrapped_hiob.set_center_bias(i_center, center, bias); }

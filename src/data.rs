@@ -9,14 +9,17 @@ use {
 	futures::{prelude::*, executor::block_on},
 	std::{pin::Pin, marker::PhantomData},
 };
-#[cfg(feature="rust-hdf5")]
+use ndarray_rand::rand_distr::Normal;
+use ndarray_rand::rand::thread_rng;
+use rand::distributions::Distribution;
 #[cfg(feature="parallel")]
 use rayon::iter::ParallelIterator;
-use ndarray::{Array1, Array2, Slice, Data, ArrayBase, Ix2, Axis};
+use ndarray::{Array1, Array2, ArrayBase, Axis, Data, Ix2, Slice};
 use crate::{
-	inversion::{SphericalInverterParams, SphericalInverter},
+	inversion::{SphericalInverter, SphericalInverterParams},
+	progress::par_iter,
 	random::RandomPermutationGenerator,
-	types::HIOBFloat,
+	types::HIOBFloat
 };
 
 pub trait MatrixDataSource<T> {
@@ -215,25 +218,58 @@ pub fn store_h5_dataset<T: hdf5::H5Type>(file: &str, dataset: &str, data: &Array
 }
 
 
+crate::types::param_struct!(DPSParams[Clone]<T: HIOBFloat> {
+	reshape: Option<Vec<usize>> = None,
+	kernel_width: Option<usize> = None,
+	perm_gen_rounds: Option<usize> = None,
+	noise_std: Option<T> = None,
+	pre_noise: bool = true,
+	n_invert_init_samples: usize = 100,
+});
 pub struct DatasourcePermutationSampler<T: HIOBFloat, M: MatrixDataSource<T>> {
 	_phantom: PhantomData<T>,
 	pub data_source: M,
 	perm_gen: RandomPermutationGenerator,
 	pub inverter: Option<SphericalInverter<T>>,
+	kernel_perm_gen: Option<RandomPermutationGenerator>,
+	params: DPSParams<T>,
 }
 impl<T: HIOBFloat, M: MatrixDataSource<T>> DatasourcePermutationSampler<T, M> {
-	pub fn new(data_source: M, perm_gen_rounds: Option<usize>) -> Self {
-		let perm_gen = RandomPermutationGenerator::new(data_source.n_rows(), perm_gen_rounds.unwrap_or(4));
+	/* TODO: Reduce this to one constructor based on what parameters are set */
+	pub fn new(data_source: M, params: DPSParams<T>) -> Self {
+		let perm_gen = RandomPermutationGenerator::new(data_source.n_rows(), params.perm_gen_rounds.unwrap_or(4));
 		Self {
 			_phantom: PhantomData,
 			data_source,
 			perm_gen,
 			inverter: None,
+			kernel_perm_gen: None,
+			params: params,
 		}
 	}
-	pub fn new_inversive(data_source: M, perm_gen_rounds: Option<usize>, n_invert_init_samples: usize, inverter_params: SphericalInverterParams<T>) -> Self {
-		let mut sampler = Self::new(data_source, perm_gen_rounds);
-		let inverter_init_sample = sampler.sample(n_invert_init_samples);
+	pub fn new_kernel(data_source: M, params: DPSParams<T>) -> Self {
+		let perm_gen = RandomPermutationGenerator::new(data_source.n_rows(), params.perm_gen_rounds.unwrap_or(4));
+		let kernel_max_idx = data_source.n_cols() / params.reshape.as_ref().unwrap()[0];
+		let kernel_perm_gen = RandomPermutationGenerator::new(kernel_max_idx, params.perm_gen_rounds.unwrap_or(4));
+		Self {
+			_phantom: PhantomData,
+			data_source,
+			perm_gen,
+			inverter: None,
+			kernel_perm_gen: Some(kernel_perm_gen),
+			params: params,
+		}
+	}
+	pub fn new_inversive(data_source: M, params: DPSParams<T>, inverter_params: SphericalInverterParams<T>) -> Self {
+		let mut sampler = Self::new(data_source, params);
+		let inverter_init_sample = sampler.sample(sampler.params.n_invert_init_samples);
+		let inverter = SphericalInverter::new(&inverter_init_sample, inverter_params);
+		sampler.inverter = Some(inverter);
+		sampler
+	}
+	pub fn new_inversive_kernel(data_source: M, params: DPSParams<T>, inverter_params: SphericalInverterParams<T>) -> Self {
+		let mut sampler = Self::new_kernel(data_source, params);
+		let inverter_init_sample = sampler.sample(sampler.params.n_invert_init_samples);
 		let inverter = SphericalInverter::new(&inverter_init_sample, inverter_params);
 		sampler.inverter = Some(inverter);
 		sampler
@@ -241,8 +277,78 @@ impl<T: HIOBFloat, M: MatrixDataSource<T>> DatasourcePermutationSampler<T, M> {
 	pub fn sample(&mut self, n_samples: usize) -> Array2<T> {
 		let idx = self.perm_gen.next_usizes(n_samples);
 		let mut sample = self.data_source.get_rows(&idx);
+		if self.params.reshape.is_some() {
+			/* Shape of a single sample after reshape */
+			let sample_shape = self.params.reshape.as_ref().unwrap();
+			/* Shape of the inputs after reshaping */
+			let mut full_shape = vec![0; sample_shape.len()+1];
+			full_shape[0] = n_samples;
+			full_shape[1..].copy_from_slice(&sample_shape);
+			let kernel_width = self.params.kernel_width.unwrap();
+			let radius_l = kernel_width/2;
+			let radius_r = kernel_width-radius_l;
+			/* Shape after adding padding */
+			let padded_shape = sample_shape.iter().enumerate().map(|(i,&x)| if i==0 {x} else {x + kernel_width}).collect::<Vec<usize>>();
+			let padded_dim = padded_shape.iter().map(|&a|a).reduce(|a,b| a*b).unwrap();
+			let kernel_idx = self.kernel_perm_gen.as_mut().unwrap().next_usizes(n_samples);
+			/* Kernel dimensionality is kernel width to the power of tensor dimensions times number of channels */
+			let n_channels = sample_shape[0];
+			let kernel_dim = kernel_width.pow((sample_shape.len()-1) as u32) * n_channels;
+			let mut kernels: Array2<T> = Array2::from_elem((n_samples, kernel_dim), T::zero());
+			/* Sample kernels */
+			/* TODO: Add batching */
+			par_iter(
+				kernels.axis_iter_mut(Axis(0))
+				.zip(kernel_idx.into_iter())
+				.zip(sample.axis_iter(Axis(0)))
+			)
+			.map(|((a,b),c)| (a,b,c))
+			.for_each(|(mut target, i_kernel, source)| {
+				/* Reshaped source */
+				let reshaped = source.to_shape(sample_shape.clone()).unwrap();
+				/* Create zero padded source with padding in all axes except channels */
+				let padded_linear = Array1::from_elem(padded_dim, T::zero());
+				let mut padded = padded_linear.to_shape(padded_shape.clone()).unwrap();
+				padded.axis_iter_mut(Axis(0)).zip(reshaped.axis_iter(Axis(0))).for_each(|(mut a,b)| {
+					a.slice_each_axis_mut(|v| Slice::from(radius_l..v.len-radius_r)).assign(&b);
+				});
+				/* Translate random index to kernel start coordinates */
+				let mut coords = vec![0; sample_shape.len()-1];
+				let mut remaining = i_kernel;
+				(0..sample_shape.len()-1).for_each(|i| {
+					coords[i] = remaining % sample_shape[i+1];
+					remaining /= sample_shape[i+1];
+				});
+				/* Create slice over all channels and kernel width along all other axes */
+				let mut slice = padded.slice_axis(Axis(0), Slice::from(..));
+				for i in 0..sample_shape.len()-1 {
+					let slice_start = coords[i];
+					let slice_end = coords[i] + self.params.kernel_width.unwrap();
+					slice.slice_axis_inplace(Axis(i+1), Slice::from(slice_start..slice_end));
+				}
+				/* Flatten the sampled kernel and write it into the target vector */
+				target.assign(&slice.to_shape(target.shape()).unwrap());
+			});
+			sample = kernels;
+		}
+		if self.params.pre_noise && self.params.noise_std.is_some() {
+			let mut rng = thread_rng();
+			let normal: Normal<f64> = Normal::new(
+				0.,
+				self.params.noise_std.unwrap().to_f64().unwrap()
+			).unwrap();
+			sample.mapv_inplace(|v| v + T::from(normal.sample(&mut rng)).unwrap());
+		}
 		if self.inverter.is_some() {
 			sample = self.inverter.as_ref().unwrap().invert(&sample);
+		}
+		if !self.params.pre_noise && self.params.noise_std.is_some() {
+			let mut rng = thread_rng();
+			let normal: Normal<f64> = Normal::new(
+				0.,
+				self.params.noise_std.unwrap().to_f64().unwrap()
+			).unwrap();
+			sample.mapv_inplace(|v| v + T::from(normal.sample(&mut rng)).unwrap());
 		}
 		sample
 	}
@@ -277,5 +383,16 @@ fn benchmark_access_dataset_time() {
 	});
 	let end = current_millis();
 	println!("{:?}", (end-start)/n_its);
+}
+
+#[test]
+fn kernel_sampler_test() {
+	let data = Array2::from_shape_fn((100, 400), |(i,j)| i as f32 + j as f32);
+	let mut sampler = DatasourcePermutationSampler::new_kernel(&data, DPSParams::new().with_kernel_width(Some(3)).with_reshape(Some(vec![4,10,10])));
+	let sample = sampler.sample(10);
+	println!("{:?}\n{:?}", sample, sample.shape());
+	let mut sampler = DatasourcePermutationSampler::new_inversive_kernel(&data, DPSParams::new().with_kernel_width(Some(3)).with_reshape(Some(vec![4,10,10])), SphericalInverterParams::new());
+	let sample = sampler.sample(10);
+	println!("{:?}\n{:?}", sample, sample.shape());
 }
 

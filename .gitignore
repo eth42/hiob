@@ -8,6 +8,7 @@ tmp
 *.svg
 *.old
 benchmark_main.rs
+runs
 
 # Ignore Cargo.lock because this is a library and not a binary
 Cargo.lock

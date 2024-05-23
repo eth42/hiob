@@ -268,6 +268,9 @@ macro_rules! stochastic_hiob_struct_gen {
 					affine: Option<bool>,
 					inversive: Option<bool>,
 					n_inverter_init_samples: Option<usize>,
+					kernelized: Option<bool>,
+					kernel_reshape: Option<Vec<usize>>,
+					kernel_width: Option<usize>,
 					perm_gen_rounds: Option<usize>,
 					scale: Option<f64>,
 					centers: Option<PyReadonlyArray2<$prec_type>>,
@@ -281,6 +284,7 @@ macro_rules! stochastic_hiob_struct_gen {
 					itq_central: Option<bool>,
 					itq_iterations: Option<usize>,
 					noise_std: Option<f64>,
+					pre_noise: Option<bool>,
 					update_parallel: Option<bool>,
 					displace_parallel: Option<bool>,
 				) -> PyResult<Self> {
@@ -293,8 +297,12 @@ macro_rules! stochastic_hiob_struct_gen {
 						.maybe_with_its_per_sample(its_per_sample)
 						.maybe_with_inversive(inversive)
 						.maybe_with_n_inverter_init_samples(n_inverter_init_samples)
+						.maybe_with_kernelized(kernelized)
+						.maybe_with_kernel_reshape(kernel_reshape)
+						.maybe_with_kernel_width(kernel_width)
 						.maybe_with_perm_gen_rounds(perm_gen_rounds)
-						.with_noise_std(noise_std.map(|v| <$prec_type as NumCast>::from(v).unwrap())),
+						.with_noise_std(noise_std.map(|v| <$prec_type as NumCast>::from(v).unwrap()))
+						.maybe_with_pre_noise(pre_noise),
 						HIOBParams::new()
 						.maybe_with_affine(affine)
 						.maybe_with_scale(scale.map(|v| <$prec_type as NumCast>::from(v).unwrap()))
@@ -334,6 +342,9 @@ macro_rules! stochastic_hiob_struct_gen {
 					affine: Option<bool>,
 					inversive: Option<bool>,
 					n_inverter_init_samples: Option<usize>,
+					kernelized: Option<bool>,
+					kernel_reshape: Option<Vec<usize>>,
+					kernel_width: Option<usize>,
 					perm_gen_rounds: Option<usize>,
 					scale: Option<f64>,
 					centers: Option<PyReadonlyArray2<$prec_type>>,
@@ -347,6 +358,7 @@ macro_rules! stochastic_hiob_struct_gen {
 					itq_central: Option<bool>,
 					itq_iterations: Option<usize>,
 					noise_std: Option<f64>,
+					pre_noise: Option<bool>,
 					update_parallel: Option<bool>,
 					displace_parallel: Option<bool>,
 				) -> PyResult<Self> {
@@ -358,8 +370,12 @@ macro_rules! stochastic_hiob_struct_gen {
 						.maybe_with_its_per_sample(its_per_sample)
 						.maybe_with_inversive(inversive)
 						.maybe_with_n_inverter_init_samples(n_inverter_init_samples)
+						.maybe_with_kernelized(kernelized)
+						.maybe_with_kernel_reshape(kernel_reshape)
+						.maybe_with_kernel_width(kernel_width)
 						.maybe_with_perm_gen_rounds(perm_gen_rounds)
-						.with_noise_std(noise_std.map(|v| <$prec_type as NumCast>::from(v).unwrap())),
+						.with_noise_std(noise_std.map(|v| <$prec_type as NumCast>::from(v).unwrap()))
+						.maybe_with_pre_noise(pre_noise),
 						HIOBParams::new()
 						.maybe_with_affine(affine)
 						.maybe_with_scale(scale.map(|v| <$prec_type as NumCast>::from(v).unwrap()))
@@ -461,6 +477,26 @@ macro_rules! stochastic_hiob_struct_gen {
 				#[getter]
 				pub fn get_inversive(&self) -> PyResult<bool> {
 					get_gen!(self.shiob, inversive)
+				}
+				#[getter]
+				pub fn get_kernelized(&self) -> PyResult<bool> {
+					get_gen!(self.shiob, kernelized)
+				}
+				#[getter]
+				pub fn get_kernel_width(&self) -> PyResult<usize> {
+					get_gen!(self.shiob, kernel_width)
+				}
+				#[getter]
+				pub fn get_kernel_reshape(&self) -> PyResult<Vec<usize>> {
+					get_gen!(self.shiob, kernel_reshape)
+				}
+				#[getter]
+				pub fn get_inverter_scale(&self) -> PyResult<Option<$prec_type>> {
+					get_gen!(self.shiob, inverter_scale)
+				}
+				#[getter]
+				pub fn get_inverter_shift<'py>(&self, py: Python<'py>) -> PyResult<Option<&'py PyArray1<$prec_type>>> {
+					Ok(self.shiob.get_inverter_shift().map(|v| v.to_pyarray(py)))
 				}
 				#[getter]
 				pub fn get_center_biases<'py>(&self, py: Python<'py>) -> &'py PyArray1<$prec_type> {
