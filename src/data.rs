@@ -262,9 +262,15 @@ impl<T: HIOBFloat, M: MatrixDataSource<T>> DatasourcePermutationSampler<T, M> {
 	}
 	pub fn new_inversive(data_source: M, params: DPSParams<T>, inverter_params: SphericalInverterParams<T>) -> Self {
 		let mut sampler = Self::new(data_source, params);
+		/* Disable noise to estimate good inverter parameters */
+		let noise_std = sampler.params.noise_std.clone();
+		sampler.params.noise_std = None;
+		/* Initialize inverter */
 		let inverter_init_sample = sampler.sample(sampler.params.n_invert_init_samples);
 		let inverter = SphericalInverter::new(&inverter_init_sample, inverter_params);
 		sampler.inverter = Some(inverter);
+		/* Reenable noise */
+		sampler.params.noise_std = noise_std;
 		sampler
 	}
 	pub fn new_inversive_kernel(data_source: M, params: DPSParams<T>, inverter_params: SphericalInverterParams<T>) -> Self {

@@ -35,7 +35,11 @@ fn _rabid<F: HIOBFloat>(vecs: &Array2<F>, is_normalized: bool) -> F {
 
 /* Estimate an appropriate scale value for the spherical inversion */
 pub fn initial_inversion_scale_guess<F: HIOBFloat>(vecs: &Array2<F>) -> F {
-	unsafe{vec_norms(vecs)}.into_iter().sum::<F>() / F::from(vecs.dim().0).unwrap()
+	// unsafe{vec_norms(vecs)}.into_iter().sum::<F>() / F::from(vecs.dim().0).unwrap()
+	/* Rather use median than mean since it is more stable, although it probably does not matter */
+	let mut norms = unsafe{vec_norms(vecs)};
+	norms.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+	norms[norms.len()/2]
 }
 pub fn logarithmic_grid_inversion_scale_guess<F: HIOBFloat>(vecs: &Array2<F>, grid_width: F, grid_size: usize) -> F {
 	let initial_s = initial_inversion_scale_guess(vecs);
@@ -106,9 +110,9 @@ pub struct SphericalInverter<F: HIOBFloat> {
 }
 crate::types::param_struct!(SphericalInverterParams<F: HIOBFloat> {
 	mean_center: bool = true,
-	init_grid: bool = false,
+	init_grid: bool = true,
 	grid_width: F = F::from(5.).unwrap(),
-	grid_size: usize = 10,
+	grid_size: usize = 21,
 });
 impl<F: HIOBFloat> SphericalInverter<F> {
 	pub fn new(init_sample: &Array2<F>, params: SphericalInverterParams<F>) -> Self {
