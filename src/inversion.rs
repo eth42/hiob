@@ -134,7 +134,7 @@ impl<F: HIOBFloat> SphericalInverter<F> {
 			shift,
 		}
 	}
-	pub fn invert(&self, vecs: &Array2<F>) -> Array2<F> {
+	pub fn invert<D: Data<Elem=F>>(&self, vecs: &ArrayBase<D, Ix2>) -> Array2<F> {
 		if self.shift.is_some() {
 			let shifted_vecs = vecs - self.shift.as_ref().unwrap();
 			spherical_inversion(&shifted_vecs, self.scale)

@@ -690,7 +690,8 @@ impl<F: HIOBFloat, B: HIOBBits, D: MatrixDataSource<F>> StochasticHIOB<F,B,D> wh
 
 	pub fn binarize<D2: Data<Elem=F>+MaybeSync>(&self, queries: &ArrayBase<D2, Ix2>) -> Array2<B> {
 		if self.params.inversive {
-			self.binarize_balls(queries)
+			// self.binarize_balls(queries)
+			self.wrapped_hiob.binarize(&self.data_sampler.inverter.as_ref().unwrap().invert(queries))
 		} else {
 			self.wrapped_hiob.binarize(queries)
 		}
