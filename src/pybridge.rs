@@ -666,6 +666,7 @@ macro_rules! eval_fun_gen_p {
 					hamming_neighbors: PyReadonlyArray2<usize>,
 					k: usize,
 					chunk_size: Option<usize>,
+					io_chunk_size: Option<usize>,
 				) -> (&'py PyArray2<$prec_type>, &'py PyArray2<usize>) {
 					let (dots, idxs) = self.bin_eval.refine_h5(
 						data_file.as_str(),
@@ -674,6 +675,7 @@ macro_rules! eval_fun_gen_p {
 						&hamming_neighbors.as_array(),
 						k,
 						chunk_size,
+						io_chunk_size,
 					);
 					(dots.to_pyarray(py), idxs.to_pyarray(py))
 				}

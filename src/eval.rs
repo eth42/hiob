@@ -234,10 +234,65 @@ impl BinarizationEvaluator {
 		queries: &ArrayBase<TQ, Ix2>,
 		hamming_ids: &ArrayBase<TI, Ix2>,
 		k: usize,
+		io_chunk_size: Option<usize>,
 		chunk_size: Option<usize>,
 	) -> (Array2<F>, Array2<usize>) {
-		let data = H5PyDataset::<F>::new(data_file, data_dataset);
-		self.abstract_refine(&data, queries, hamming_ids, k, chunk_size)
+		let n_queries = queries.len_of(Axis(0));
+		let io_chunk_size = io_chunk_size.unwrap_or(n_queries);
+		let mut all_dot_prods = Array2::zeros((n_queries, k));
+		let mut all_neighbor_ids = Array2::zeros((n_queries, k));
+		let data: H5PyDataset<F> = H5PyDataset::<F>::new(data_file, data_dataset);
+		queries.axis_chunks_iter(Axis(0), io_chunk_size)
+		.zip(hamming_ids.axis_chunks_iter(Axis(0), io_chunk_size))
+		.enumerate()
+		.for_each(|(i_chunk, (queries_chunk, hamming_ids_chunk))| {
+			/* Load all vectors that are neighbor to at least one query to reduce the number of IO operations to 1 */
+			/* First find the unique ids of all data objects required */
+			// println!("Chunk {}/{} selecting unique ids", i_chunk+1, (n_queries+io_chunk_size-1)/io_chunk_size);
+			let mut unique_ids = hamming_ids_chunk.as_slice().unwrap().to_vec();
+			#[cfg(feature="parallel")]
+			use rayon::prelude::ParallelSliceMut;
+			#[cfg(feature="parallel")]
+			unique_ids.par_sort_unstable();
+			#[cfg(not(feature="parallel"))]
+			unique_ids.sort_unstable();
+			unique_ids.dedup();
+			/* Load the corresponding vectors in a single IO operation */
+			// println!("Chunk {}/{} fetching vectors from disk", i_chunk+1, (n_queries+io_chunk_size-1)/io_chunk_size);
+			let unique_vecs = data.get_rows(&unique_ids);
+			/* Re-index the neighbor ids to the new unique order */
+			// println!("Chunk {}/{} re-indexing neighbors", i_chunk+1, (n_queries+io_chunk_size-1)/io_chunk_size);
+			fn binary_search(arr: &Vec<usize>, val: usize) -> usize {
+				let mut low = 0;
+				let mut high = arr.len();
+				while low < high {
+					let mid = (low + high) / 2;
+					if arr[mid] < val {
+						low = mid + 1;
+					} else {
+						high = mid;
+					}
+				}
+				low
+			}
+			let new_hamming_ids = Array2::from_shape_fn(
+				hamming_ids_chunk.raw_dim(),
+				|(i,j)| binary_search(&unique_ids, hamming_ids_chunk[(i,j)])
+			);
+			/* Call the non-h5 refine function */
+			// println!("Chunk {}/{} refining neighbors", i_chunk+1, (n_queries+io_chunk_size-1)/io_chunk_size);
+			let (dot_prods,mut neighbor_ids) = self.refine(&unique_vecs, &queries_chunk, &new_hamming_ids, k, chunk_size);
+			/* Re-index the neighbor ids back to the original order */
+			// println!("Chunk {}/{} re-indexing neighbors back", i_chunk+1, (n_queries+io_chunk_size-1)/io_chunk_size);
+			neighbor_ids.iter_mut().for_each(|v| *v = unique_ids[*v]);
+			/* Assign the results to the output arrays */
+			let effective_chunk_size = queries_chunk.len_of(Axis(0));
+			let start = i_chunk*io_chunk_size;
+			let end = start + effective_chunk_size;
+			all_dot_prods.slice_mut(ndarray::s![start..end,..]).assign(&dot_prods);
+			all_neighbor_ids.slice_mut(ndarray::s![start..end,..]).assign(&neighbor_ids);
+		});
+		(all_dot_prods, all_neighbor_ids)
 	}
 
 	pub fn refine_with_other_bin<

@@ -90,18 +90,44 @@ impl<T: NumpyEquivalent> MatrixDataSource<T> for H5PyDataset<T> {
 		row.unwrap()
 	}
 	fn get_rows(&self, i_rows: &Vec<usize>) -> Array2<T> {
+		let row_chunks = std::cmp::max(i_rows.len()/200, std::cmp::min(i_rows.len(),10));
 		let row: Result<_,pyo3::PyErr> = pyo3::Python::with_gil(|py| {
-			let locals = pyo3::types::PyDict::new(py);
+			let parallel_read_code = r#"
+def parallel_h5_read(file, key, idx, threads=8):
+	from multiprocessing.pool import ThreadPool
+	import numpy as np
+	import h5py
+	idx = np.sort(idx)
+	idx_chunks = np.array_split(idx, threads)
+	def single_reader(idx_chunk):
+		return h5py.File(file)[key][idx_chunk]
+	with ThreadPool(threads) as pool:
+		results = pool.map(single_reader, idx_chunks)
+	return np.concatenate(results,axis=0)
+"#;
+			py.run(parallel_read_code, None, None)?;
+			let locals = py.eval("locals()", None, None)?.downcast::<pyo3::types::PyDict>()?;
 			locals.set_item("h5py", py.import("h5py")?)?;
 			locals.set_item("np", py.import("numpy")?)?;
-			locals.set_item("data", py.eval(
-				format!("h5py.File(\"{:}\")[\"{:}\"]", self.file.as_str(), self.dataset.as_str()).as_str(),
-				None,
-				Some(&locals)
-			)?)?;
 			locals.set_item("idx", i_rows)?;
+			// locals.set_item("data", py.eval(
+			// 	format!("h5py.File(\"{:}\")[\"{:}\"]", self.file.as_str(), self.dataset.as_str()).as_str(),
+			// 	None,
+			// 	Some(&locals)
+			// )?)?;
+			// let row_obj = py.eval(
+			// 	format!("data[np.sort(idx)].astype(np.{:})", T::numpy_name()).as_str(),
+			// 	None,
+			// 	Some(&locals)
+			// )?;
 			let row_obj = py.eval(
-				format!("data[np.sort(idx)].astype(np.{:})", T::numpy_name()).as_str(),
+				format!(
+					"parallel_h5_read(\"{:}\", \"{:}\", idx, threads={:}).astype(np.{:})",
+					self.file.as_str(),
+					self.dataset.as_str(),
+					row_chunks,
+					T::numpy_name()
+				).as_str(),
 				None,
 				Some(&locals)
 			)?;
