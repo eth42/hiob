@@ -32,6 +32,7 @@ pub struct MinHashSearcher<'a> {
 impl<'a> MinHashSearcher<'a> {
 	pub fn new(data: &'a Array2<u64>, num_hashes: usize, num_positions: usize) -> MinHashSearcher<'a> {
 		let num_bits = 64 * data.len_of(Axis(1));
+		// println!("Num bits: {}, Num hashes: {}, Num positions: {}", num_bits, num_hashes, num_positions);
 		let hashers: Vec<_> = (0..num_hashes).map(|_| BitHasher::new(num_bits, num_positions)).collect();
 		let inverted_index: Vec<Vec<Vec<usize>>> = hashers.iter().map(|hasher| {
 			let mut inv_index = vec![

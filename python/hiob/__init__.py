@@ -1,5 +1,5 @@
 from .hiob import *
-from .hiob import RawBinarizationEvaluator, supports_f16
+from .hiob import RawBinarizationEvaluator, supports_f16, PyMinHashSearcher
 import numpy as np
 
 def _float_type_name(float_type):

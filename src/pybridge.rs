@@ -13,6 +13,7 @@ use crate::pydata::H5PyDataset;
 use crate::eval::BinarizationEvaluator;
 use crate::bit_vectors::BitVector;
 use crate::index::THX;
+use crate::min_hash_search::MinHashSearcher;
 
 
 macro_rules! get_gen {
@@ -978,6 +979,28 @@ macro_rules! thx_python_export {
 	};
 }
 
+#[pyclass]
+pub struct PyMinHashSearcher {
+	searcher: MinHashSearcher<'static>,
+	bin_data: Box<Array2<u64>>,
+}
+#[pymethods]
+impl PyMinHashSearcher {
+	#[new]
+	pub fn new(data: PyReadonlyArray2<u64>, n_hashes: usize, n_positions: usize) -> Self {
+		let bin_data = Box::new(data.as_array().into_owned());
+		let data_ptr = &*bin_data as *const Array2<u64>;
+		let data_ref = unsafe{&*data_ptr};
+		let searcher = MinHashSearcher::new(data_ref, n_hashes, n_positions);
+		Self{searcher, bin_data}
+	}
+	pub fn query<'py>(&self, py: Python<'py>, query: PyReadonlyArray2<'py, u64>, n_neighbors: usize, chunk_size: Option<usize>) -> (&'py PyArray2<usize>, &'py PyArray2<usize>) {
+		let (a,b) = self.searcher.query(&query.as_array().into_owned(), n_neighbors, chunk_size);
+		(a.to_pyarray(py), b.to_pyarray(py))
+	}
+}
+
+
 
 #[pyfunction]
 pub fn limit_threads(_num_threads: usize) -> Result<(), PyErr> {
@@ -1014,6 +1037,7 @@ fn hiob(_py: Python, m: &PyModule) -> PyResult<()> {
 	stochastic_hiob_python_export!(m, f16, (bool, u8, u16, u32, u64));
 	thx_python_export!(m, (bool, u8, u16, u32, u64), (2,3,4,5,6,7,8,9,10));
 	m.add_class::<RawBinarizationEvaluator>()?;
+	m.add_class::<PyMinHashSearcher>()?;
 	m.add_wrapped(wrap_pyfunction!(limit_threads))?;
 	m.add_wrapped(wrap_pyfunction!(num_threads))?;
 	m.add_wrapped(wrap_pyfunction!(supports_f16))?;
