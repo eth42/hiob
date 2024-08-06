@@ -15,6 +15,7 @@ pub mod index;
 pub mod heaps;
 pub mod random;
 pub mod data;
+pub mod min_hash_search;
 
 #[cfg(feature="python")]
 pub mod pybridge;

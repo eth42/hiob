@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 
-use ndarray::{Data, Ix2, ArrayBase, Axis, Array2};
+use ndarray::{Data, Ix2, ArrayBase, Axis, Array2, s};
+use crate::data::AsyncMatrixDataSource;
 #[cfg(feature="parallel")]
 use rayon::iter::ParallelIterator;
 
@@ -14,7 +15,7 @@ use crate::{
 	heaps::{MaxHeap, MinHeap, GenericHeap}
 };
 #[cfg(feature="python")]
-use crate::pydata::H5PyDataset;
+use crate::pydata::{H5PyDataset,CachingH5PyReader};
 
 pub struct BinarizationEvaluator {}
 impl BinarizationEvaluator {
@@ -295,6 +296,106 @@ impl BinarizationEvaluator {
 		(all_dot_prods, all_neighbor_ids)
 	}
 
+	#[cfg(feature="python")]
+	pub fn refine_h5_wip<
+		F: HIOBFloat,
+		TQ: Data<Elem=F>,
+		TI: Data<Elem=usize> + std::marker::Sync,
+	>(
+		&self,
+		data_file: &str,
+		data_dataset: &str,
+		queries: &ArrayBase<TQ, Ix2>,
+		hamming_ids: &ArrayBase<TI, Ix2>,
+		k: usize,
+		io_chunk_size: Option<usize>,
+		chunk_size: Option<usize>,
+	) -> (Array2<F>, Array2<usize>) {
+		fn sorted_order(a: Vec<usize>, b: Vec<usize>) -> (Vec<usize>, Vec<usize>) {
+			let mut indices: Vec<usize> = (0..a.len()).collect();
+			#[cfg(feature="parallel")]
+			use rayon::prelude::ParallelSliceMut;
+			#[cfg(feature="parallel")]
+			indices.par_sort_unstable_by_key(|&i| &a[i]);
+			#[cfg(not(feature="parallel"))]
+			indices.sort_unstable_by_key(|&i| &a[i]);
+			indices = (0..indices.len()).filter(|&i| (i==0) || (a[indices[i]] != a[indices[i-1]])).map(|i| indices[i]).collect();
+			let a = indices.iter().map(|&i| a[i]).collect();
+			let b = indices.iter().map(|&i| b[i]).collect();
+			(a, b)
+		}
+		fn binary_search(arr: &Vec<usize>, val: usize) -> usize {
+			let mut low = 0;
+			let mut high = arr.len();
+			while low < high {
+				let mid = (low + high) / 2;
+				if arr[mid] < val {
+					low = mid + 1;
+				} else {
+					high = mid;
+				}
+			}
+			low
+		}
+		let n_queries = queries.len_of(Axis(0));
+		let n_cands = hamming_ids.len_of(Axis(1));
+		let io_chunk_size = io_chunk_size.unwrap_or(n_queries);
+		let mut all_dot_prods = Array2::zeros((n_queries, k));
+		let mut all_neighbor_ids = Array2::zeros((n_queries, k));
+		let mut cached_data = CachingH5PyReader::<F>::new(data_file.to_string(), data_dataset.to_string());
+		let mut lo = 0;
+		let mut hi = io_chunk_size.min(n_queries);
+		let flat_ids: Vec<usize> = hamming_ids.slice(s![lo..hi,..]).as_slice().unwrap().to_vec();
+		let (flat_ids, mut flat_id_order) = sorted_order(flat_ids, (0..(hi-lo)*n_cands).collect());
+		let mut local_hamming_ids = Array2::zeros((hi-lo, n_cands));
+		par_iter(local_hamming_ids.axis_iter_mut(Axis(0)).enumerate()).for_each(|(i_row, mut row)| {
+			row.iter_mut().enumerate().for_each(|(i_col,v)| {
+				*v = binary_search(&flat_ids, hamming_ids[(lo+i_row,i_col)]);
+			});
+		});
+		println!("{:?}",flat_ids);
+		let mut next_data = cached_data.get_rows(&flat_ids);
+		let mut cached = hi;
+		while cached < n_queries {
+			let next_lo = cached;
+			let next_hi = (cached+io_chunk_size).min(n_queries);
+			let next_flat_ids: Vec<usize> = hamming_ids.slice(s![next_lo..next_hi,..]).as_slice().unwrap().to_vec();
+			let (next_flat_ids, next_flat_id_order) = sorted_order(next_flat_ids, (0..(next_hi-next_lo)*n_cands).collect());
+			let mut next_local_hamming_ids = Array2::zeros((hi-lo, n_cands));
+			par_iter(next_local_hamming_ids.axis_iter_mut(Axis(0)).enumerate()).for_each(|(i_row, mut row)| {
+				row.iter_mut().enumerate().for_each(|(i_col,v)| {
+					*v = binary_search(&next_flat_ids, hamming_ids[(next_lo+i_row,i_col)]);
+				});
+			});
+			assert!(cached_data.prepare_rows(next_flat_ids).is_ok());
+			cached += next_hi-next_lo;
+			println!("Starting refine");
+			let (dot_prods,mut neighbor_ids) = self.refine(&next_data, &queries.slice(s![lo..hi,..]), &local_hamming_ids, k, chunk_size);
+			println!("Finished refine");
+			neighbor_ids.iter_mut().for_each(|v| {
+				*v = flat_id_order[*v];
+				*v = hamming_ids[(*v/hamming_ids.len_of(Axis(1)),*v%hamming_ids.len_of(Axis(1)))];
+			});
+			/* Assign the results to the output arrays */
+			all_dot_prods.slice_mut(ndarray::s![lo..hi,..]).assign(&dot_prods);
+			all_neighbor_ids.slice_mut(ndarray::s![lo..hi,..]).assign(&neighbor_ids);
+			next_data = cached_data.get_cached().unwrap();
+			lo = next_lo;
+			hi = next_hi;
+			flat_id_order = next_flat_id_order;
+			local_hamming_ids = next_local_hamming_ids;
+		}
+		let (dot_prods,mut neighbor_ids) = self.refine(&next_data, &queries.slice(s![lo..hi,..]), &local_hamming_ids, k, chunk_size);
+		neighbor_ids.iter_mut().for_each(|v| {
+			*v = flat_id_order[*v];
+			*v = hamming_ids[(*v/hamming_ids.len_of(Axis(1)),*v%hamming_ids.len_of(Axis(1)))];
+		});
+		/* Assign the results to the output arrays */
+		all_dot_prods.slice_mut(ndarray::s![lo..hi,..]).assign(&dot_prods);
+		all_neighbor_ids.slice_mut(ndarray::s![lo..hi,..]).assign(&neighbor_ids);
+		(all_dot_prods, all_neighbor_ids)
+	}
+
 	pub fn refine_with_other_bin<
 		B: HIOBBits,
 		TD: Data<Elem=B>+MaybeSync,
@@ -426,12 +527,12 @@ impl BinarizationEvaluator {
 						}
 					});
 					let last_heap = heap_cache.get_unchecked_mut(n_bins-1);
-					let mut i_nn = final_k-1;
+					let mut i_nn = final_k;
 					while last_heap.size() > 0 {
+						i_nn -= 1; /* Subtract first to avoid overflow in last iteration. */
 						let (dist, idx) = last_heap.pop().unwrap_unchecked();
 						*nn_dist.uget_mut(i_nn) = dist;
 						*nn_idx.uget_mut(i_nn) = idx;
-						i_nn -= 1;
 					}
 				});
 			});

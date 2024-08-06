@@ -46,6 +46,9 @@ pub trait GenericHeap: IntoIterator {
 	fn clear(&mut self) {
 		self.wrapped_heap_mut().clear();
 	}
+	fn has_value(&self, value: &Self::Value, eq_fun: fn(&Self::Value, &Self::Value) -> bool) -> bool {
+		self.wrapped_heap().iter().any(|pair| eq_fun(pair.value_ref(), value))
+	}
 }
 
 
