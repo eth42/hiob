@@ -61,8 +61,9 @@ pub trait BitMasked<const N_BITS: usize>: Sized {
 	const INV_BIT_MASKS: [Self; N_BITS];
 }
 macro_rules! int_bits {
-	($itype: ident, $n_bits: literal ) => {
+	($itype: ident, $n_bits: expr ) => {
 		paste! {
+			#[allow(unused_braces)]
 			const fn [<bit_mask_arr_gen_ $itype>](inv: bool) -> [$itype; $n_bits] {
 				let mut ret = [0 as $itype; $n_bits];
 				let mut i=0;
@@ -73,11 +74,13 @@ macro_rules! int_bits {
 				}
 				ret
 			}
+			#[allow(unused_braces)]
 			impl BitMasked<$n_bits> for $itype {
 				const BIT_MASKS: [$itype; $n_bits] = [<bit_mask_arr_gen_ $itype>](false);
 				const INV_BIT_MASKS: [$itype; $n_bits] = [<bit_mask_arr_gen_ $itype>](true);
 			}
 		}
+		#[allow(unused_braces)]
 		impl Bits for $itype {
 			#[inline(always)]
 			fn size() -> usize { $n_bits }
@@ -127,4 +130,5 @@ int_bits!(u16, 16);
 int_bits!(u32, 32);
 int_bits!(u64, 64);
 int_bits!(u128, 128);
+int_bits!(usize, {usize::BITS as usize});
 

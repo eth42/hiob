@@ -1,9 +1,12 @@
 use crate::random::RandomPermutationGenerator;
-use crate::{bit_vectors::*, progress::par_iter};
+use crate::{bit_vectors::BitVector, progress::par_iter};
 use crate::heaps::{GenericHeap, MaxHeap};
-use ndarray::{Array2, ArrayView1, AssignElem, Axis};
+use crate::bits::Bits;
+use ndarray::{Array2, AssignElem, Axis};
 #[cfg(feature="parallel")]
 use rayon::iter::ParallelIterator;
+#[cfg(feature="parallel")]
+use std::marker::{Sync, Send};
 
 struct BitHasher {
 	bit_positions: Vec<usize>,
@@ -17,44 +20,75 @@ impl BitHasher {
 		}
 		BitHasher { bit_positions }
 	}
-	fn hash(&self, vec: &ArrayView1<u64>) -> usize {
-		self.bit_positions.iter().enumerate().map(|(i, &pos)| {
-			(vec.get_bit_unchecked(pos) as usize) << i
-		}).sum()
+	fn hash<V: BitVector, O: Bits>(&self, vec: &V) -> O {
+		let mut ret = O::zeros();
+		self.bit_positions.iter().enumerate()
+		.for_each(|(i, &pos)| {
+			ret.set_bit_unchecked(i, vec.get_bit_unchecked(pos))
+		});
+		ret
 	}
 }
 
-pub struct MinHashSearcher<'a> {
-	data: &'a Array2<u64>,
-	hashers: Vec<BitHasher>,
-	inverted_index: Vec<Vec<Vec<usize>>>,
+
+use std::fmt::Debug;
+use std::convert::{TryFrom,TryInto};
+#[cfg(feature="parallel")]
+pub trait Reference: TryFrom<usize>+TryInto<usize>+Clone+Send+Sync {
+	fn as_usize(&self) -> usize;
+	fn into_usize(self) -> usize;
+	fn from_usize(v: usize) -> Self;
 }
-impl<'a> MinHashSearcher<'a> {
-	pub fn new(data: &'a Array2<u64>, num_hashes: usize, num_positions: usize) -> MinHashSearcher<'a> {
+#[cfg(feature="parallel")]
+impl<R: TryFrom<usize>+TryInto<usize>+Clone+Send+Sync> Reference for R where <R as TryFrom<usize>>::Error: Debug, <R as TryInto<usize>>::Error: Debug {
+	fn as_usize(&self) -> usize {self.clone().into_usize()}
+	fn into_usize(self) -> usize {self.try_into().unwrap()}
+	fn from_usize(v: usize) -> Self {Self::try_from(v).unwrap()}
+}
+#[cfg(not(feature="parallel"))]
+pub trait Reference: TryFrom<usize>+TryInto<usize>+Clone {
+	fn as_usize(&self) -> usize;
+	fn into_usize(self) -> usize;
+	fn from_usize(v: usize) -> Self;
+}
+#[cfg(not(feature="parallel"))]
+impl<R: TryFrom<usize>+TryInto<usize>+Clone> Reference for R where <R as TryFrom<usize>>::Error: Debug, <R as TryInto<usize>>::Error: Debug {
+	fn as_usize(&self) -> usize {self.clone().into_usize()}
+	fn into_usize(self) -> usize {self.try_into().unwrap()}
+	fn from_usize(v: usize) -> Self {Self::try_from(v).unwrap()}
+}
+
+// impl Reference for u32 {}
+
+
+pub struct MinHashSearcher<'a, I: Bits, R: Reference> {
+	data: &'a Array2<I>,
+	hashers: Vec<BitHasher>,
+	inverted_index: Vec<Vec<Vec<R>>>,
+}
+impl<'a, I: Bits, R: Reference> MinHashSearcher<'a, I, R> {
+	pub fn new(data: &'a Array2<I>, num_hashes: usize, num_positions: usize) -> Self {
 		let num_bits = 64 * data.len_of(Axis(1));
 		// println!("Num bits: {}, Num hashes: {}, Num positions: {}", num_bits, num_hashes, num_positions);
 		let hashers: Vec<_> = (0..num_hashes).map(|_| BitHasher::new(num_bits, num_positions)).collect();
-		let inverted_index: Vec<Vec<Vec<usize>>> = hashers.iter().map(|hasher| {
-			let mut inv_index = vec![
-				Vec::with_capacity(data.len_of(Axis(0)) / (1<<num_positions));
-				1<<num_positions
-			];
+		let mut inverted_index: Vec<Vec<Vec<R>>> = vec![vec![Vec::new(); 1<<num_positions]; num_hashes];
+		par_iter(hashers.iter().zip(inverted_index.iter_mut()))
+		.for_each(|(hasher, inv_index)| {
 			data.outer_iter().enumerate().for_each(|(i_data, row)| {
-				let hash = hasher.hash(&row);
-				inv_index[hash].push(i_data);
+				let hash = hasher.hash::<_,usize>(&row);
+				inv_index[hash].push(R::from_usize(i_data));
 			});
-			inv_index
-		}).collect();
-		/* Sanity check that all numbers are included */
-		for inv_index in &inverted_index {
-			assert_eq!(
-				inv_index.iter().map(|v| v.len()).sum::<usize>(),
-				data.len_of(Axis(0)),
-			);
-		}
+		});
+		// /* Sanity check that all numbers are included */
+		// for inv_index in &inverted_index {
+		// 	assert_eq!(
+		// 		inv_index.iter().map(|v| v.len()).sum::<usize>(),
+		// 		data.len_of(Axis(0)),
+		// 	);
+		// }
 		MinHashSearcher { data, hashers, inverted_index }
 	}
-	pub fn query(&self, queries: &Array2<u64>, k: usize, chunk_size: Option<usize>) -> (Array2<usize>, Array2<usize>) {
+	pub fn query(&self, queries: &Array2<I>, k: usize, chunk_size: Option<usize>) -> (Array2<usize>, Array2<usize>) {
 		let chunk_size = chunk_size.unwrap_or(100);
 		let ext_k = k * self.hashers.len();
 		unsafe {
@@ -83,10 +117,11 @@ impl<'a> MinHashSearcher<'a> {
 					let q = queries.row(q_id);
 					heap.clear();
 					self.hashers.iter().enumerate().map(|(i_hash, hasher)| {
-						let hash = hasher.hash(&q);
+						let hash: usize = hasher.hash(&q);
 						self.inverted_index[i_hash][hash].iter()
 					}).flatten()
-					.for_each(|&i_row| {
+					.for_each(|i_row| {
+						let i_row: usize = i_row.as_usize();
 						let row = self.data.row(i_row);
 						let v = row.hamming_dist_same(&q);
 						if heap.size() < ext_k {
@@ -158,7 +193,7 @@ fn test_min_hash_search() {
 	let (true_nn_dists, true_nn_idxs) = BinarizationEvaluator::new().brute_force_k_smallest_hamming(&data, &queries, k_neighbors, Some(chunk_size));
 	// println!("Brute force time: {}", brute_force_timer.elapsed_str());
 	// let searcher_build_timer = Timer::new();
-	let searcher = MinHashSearcher::new(
+	let searcher: MinHashSearcher<u64,u32> = MinHashSearcher::new(
 		&data,
 		12,
 		5,

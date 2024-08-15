@@ -1,4 +1,4 @@
-use std::iter::{Iterator};
+use std::iter::Iterator;
 use ndarray::{Array1, ArrayBase, Ix1, ViewRepr, OwnedRepr, ArrayViewMut1, ArrayView1};
 
 use crate::bits::Bits;
