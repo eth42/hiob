@@ -5,6 +5,7 @@ use num::NumCast;
 use paste::paste;
 use ndarray::{Array2,OwnedRepr};
 use pyo3::exceptions::PyValueError;
+use pyo3::types::PyType;
 #[cfg(feature="half")]
 use half::f16;
 
@@ -13,7 +14,7 @@ use crate::pydata::H5PyDataset;
 use crate::eval::BinarizationEvaluator;
 use crate::bit_vectors::BitVector;
 use crate::index::THX;
-use crate::min_hash_search::MinHashSearcher;
+use crate::min_hash_search::{MinHashSearcher, ChunkyMinHashSearcher};
 
 
 macro_rules! get_gen {
@@ -1010,6 +1011,35 @@ macro_rules! searcher_struct_gen {
 					let (a,b) = self.searcher.query(&query.as_array().into_owned(), n_neighbors, chunk_size);
 					(a.to_pyarray(py), b.to_pyarray(py))
 				}
+				#[classmethod]
+				pub fn expected_size(_pytype: &PyType, n_data: usize, n_hashes: usize, n_pos: usize) -> usize {
+					MinHashSearcher::<'_,$bin_type,$ref_type>::expected_size(n_data, n_hashes, n_pos)
+				}
+			}
+			#[allow(non_camel_case_types)]
+			#[pyclass]
+			pub struct [<RawChunkyMinHashSearcher_ $bin_type _ $ref_type>] {
+				searcher: ChunkyMinHashSearcher<'static,$bin_type,$ref_type>,
+				bin_data: Box<Array2<$bin_type>>,
+			}
+			#[pymethods]
+			impl [<RawChunkyMinHashSearcher_ $bin_type _ $ref_type>] {
+				#[new]
+				pub fn new(data: PyReadonlyArray2<$bin_type>, n_hashes: usize, n_positions: usize) -> Self {
+					let bin_data = Box::new(data.as_array().into_owned());
+					let data_ptr = &*bin_data as *const Array2<$bin_type>;
+					let data_ref = unsafe{&*data_ptr};
+					let searcher: ChunkyMinHashSearcher<'static,$bin_type,$ref_type> = ChunkyMinHashSearcher::new(data_ref, n_hashes, n_positions);
+					Self{searcher, bin_data}
+				}
+				pub fn query<'py>(&self, py: Python<'py>, query: PyReadonlyArray2<'py, $bin_type>, n_neighbors: usize, chunk_size: Option<usize>) -> (&'py PyArray2<usize>, &'py PyArray2<usize>) {
+					let (a,b) = self.searcher.query(&query.as_array().into_owned(), n_neighbors, chunk_size);
+					(a.to_pyarray(py), b.to_pyarray(py))
+				}
+				#[classmethod]
+				pub fn expected_size(_pytype: &PyType, n_data: usize, n_hashes: usize, n_pos: usize) -> usize {
+					ChunkyMinHashSearcher::<'_,$bin_type,$ref_type>::expected_size(n_data, n_hashes, n_pos)
+				}
 			}
 		}
 	};
@@ -1025,7 +1055,7 @@ macro_rules! searcher_python_export {
 	($module: ident, $bin_type: ty, $ref_type: ty) => {
 		paste!{
 			$module.add_class::<[<RawMinHashSearcher_ $bin_type _ $ref_type>]>()?;
-			$module.add_class::<[<RawMinHashSearcher_ $bin_type _ $ref_type>]>()?;
+			$module.add_class::<[<RawChunkyMinHashSearcher_ $bin_type _ $ref_type>]>()?;
 		}
 	};
 }

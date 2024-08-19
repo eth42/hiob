@@ -496,4 +496,75 @@ class MinHashSearcher:
 		wrapper_class_name = specific_type+"_Wrapper"
 		wrapper_class = type(wrapper_class_name, (self.__class__,), {**self.__dict__, **attributes})
 		self.__class__ = wrapper_class
+	def expected_size(n_data: int, n_hashes: int, n_positions: int, bits_type: type = np.uint64, reference_type: type = np.uint32):
+		in_type_name = _bits_type_name(bits_type)
+		out_type_name = _bits_type_name(reference_type)
+		specific_type = "RawMinHashSearcher_{:}_{:}".format(in_type_name, out_type_name)
+		if not specific_type in globals().keys():
+			raise ValueError("Unsupported type; can't find type {:}".format(specific_type))
+		return globals()[specific_type].expected_size(n_data, n_hashes, n_positions)
 
+class ChunkyMinHashSearcher:
+	def __init__(
+		self,
+		data: np.ndarray,
+		n_hashes: int,
+		n_positions: int,
+		reference_type: type = np.uint64 if struct.calcsize("P")==8 else np.uint32,
+	):
+		if n_hashes < 1 or n_positions < 1:
+			raise ValueError("The number of hashes and bit positions should be at least 1.")
+		self._input_type = data.dtype
+		self._output_type = reference_type
+		# Match input type to string
+		input_type_name = _bits_type_name(self._input_type)
+		output_type_name = _bits_type_name(self._output_type)
+		# Create specific instance
+		specific_type = "RawChunkyMinHashSearcher_{:}_{:}".format(input_type_name, output_type_name)
+		self._rust_searcher = globals()[specific_type](data,n_hashes,n_positions)
+		attributes = {}
+		for name in dir(self._rust_searcher):
+			if name.startswith("__"): continue
+			att = getattr(self._rust_searcher, name)
+			if type(att).__name__ == "builtin_function_or_method":
+				# Forward functions but automatically cast inputs to enforce
+				# the usage of numpy arrays and the correct input types.
+				def wrapper_fun_gen(fun):
+					def wrapper_fun(*args, **kwargs):
+						def auto_cast_argument(arg):
+							# Automatically turn every list or tuple into numpy arrays
+							if type(arg) in [tuple, list]: arg = np.array(arg)
+							# Automatically cast every (float) array input to the correct input type
+							if type(arg) == np.ndarray:# and arg.dtype.name.startswith("float"):
+								return arg.astype(self._input_type)
+							return arg
+						return fun(
+							*[auto_cast_argument(arg) for arg in args],
+							**{kw: auto_cast_argument(arg) for kw,arg in kwargs}
+						)
+					return wrapper_fun
+				setattr(self, name, wrapper_fun_gen(att))
+			else:
+				# Forward attributes with implicit getter
+				def make_getter(specific_name):
+					return lambda s: getattr(s._rust_searcher, specific_name)
+				def make_setter(specific_name):
+					return lambda s, v: s._rust_searcher.__setattr__(specific_name, v)
+				getter = make_getter(name)
+				setter = make_setter(name)
+				# Test if the setter can be called, otherwise remove it
+				try: setter(self, getter(self))
+				except: setter = None
+				attributes[name] = property(fget=getter,fset=setter)
+		# Hacky class extension to add properties. Source:
+		# https://stackoverflow.com/questions/48448074/adding-a-property-to-an-existing-object-instance
+		wrapper_class_name = specific_type+"_Wrapper"
+		wrapper_class = type(wrapper_class_name, (self.__class__,), {**self.__dict__, **attributes})
+		self.__class__ = wrapper_class
+	def expected_size(n_data: int, n_hashes: int, n_positions: int, bits_type: type = np.uint64, reference_type: type = np.uint32):
+		in_type_name = _bits_type_name(bits_type)
+		out_type_name = _bits_type_name(reference_type)
+		specific_type = "RawChunkyMinHashSearcher_{:}_{:}".format(in_type_name, out_type_name)
+		if not specific_type in globals().keys():
+			raise ValueError("Unsupported type; can't find type {:}".format(specific_type))
+		return globals()[specific_type].expected_size(n_data, n_hashes, n_positions)
