@@ -2,6 +2,7 @@ use crate::random::RandomPermutationGenerator;
 use crate::{bit_vectors::BitVector, progress::par_iter};
 use crate::heaps::{GenericHeap, MaxHeap};
 use crate::bits::Bits;
+use itertools::Itertools;
 use ndarray::{Array2, AssignElem, Axis};
 #[cfg(feature="parallel")]
 use rayon::iter::ParallelIterator;
@@ -87,9 +88,46 @@ pub struct MinHashSearcher<'a, I: Bits, R: Reference> {
 	data: &'a Array2<I>,
 	hashers: Vec<BitHasher>,
 	inverted_index: Vec<Vec<Vec<R>>>,
+	hash_collision_table: Array2<usize>,
+	max_hash_dist: usize,
 }
 impl<'a, I: Bits, R: Reference> MinHashSearcher<'a, I, R> {
+	fn num_hashes_at_dist(num_positions: usize, dist: usize) -> usize {
+		/* Rust equivalent of Pythons sum(binom(num_positions, v) for v in range(dist+1)) */
+		/* Expressed as factorials: sum(fac(num_positions)/fac(v)/fac(num_positions-v) for v in range(dist+1)) */
+		/* Equivalent: sum((num_positions-v+1) * ... * num_positions / 1 / ... / v) */
+		(0..dist+1).map(|v| {
+			let mut a = 1usize;
+			let mut b = 1usize;
+			(0..v).for_each(|i| {
+				a *= num_positions - i;
+				b *= i + 1;
+			});
+			a / b
+		}).sum()
+	}
+	fn make_hash_collision_table(num_positions: usize, dist: usize) -> Array2<usize> {
+		let rows = 1usize<<num_positions;
+		let cols = Self::num_hashes_at_dist(num_positions, dist);
+		let mut table = Array2::zeros((rows, cols));
+		par_iter(table.axis_iter_mut(Axis(0)).enumerate()).for_each(|(hash, mut row)| {
+			let mut offset = 0usize;
+			(0..dist+1).for_each(|d| {
+				(0..num_positions).combinations(d).for_each(|comb| {
+					let mut other_hash = hash.clone();
+					comb.iter().for_each(|&i| other_hash ^= 1<<i);
+					row[offset] = other_hash;
+					offset += 1;
+				});
+			});
+			row.as_slice_mut().unwrap().sort_unstable();
+		});
+		table
+	}
 	pub fn new(data: &'a Array2<I>, num_hashes: usize, num_positions: usize) -> Self {
+		Self::new_with_dist(data, num_hashes, num_positions, 0)
+	}
+	pub fn new_with_dist(data: &'a Array2<I>, num_hashes: usize, num_positions: usize, max_hash_dist: usize) -> Self {
 		let num_bits = I::size() * data.len_of(Axis(1));
 		// println!("Num bits: {}, Num hashes: {}, Num positions: {}", num_bits, num_hashes, num_positions);
 		let hashers: Vec<_> = (0..num_hashes).map(|_| BitHasher::new(num_bits, num_positions)).collect();
@@ -108,7 +146,8 @@ impl<'a, I: Bits, R: Reference> MinHashSearcher<'a, I, R> {
 		// 		data.len_of(Axis(0)),
 		// 	);
 		// }
-		MinHashSearcher { data, hashers, inverted_index }
+		let hash_collision_table = Self::make_hash_collision_table(num_positions, max_hash_dist);
+		MinHashSearcher { data, hashers, inverted_index, hash_collision_table, max_hash_dist }
 	}
 	pub fn query(&self, queries: &Array2<I>, k: usize, chunk_size: Option<usize>) -> (Array2<usize>, Array2<usize>) {
 		let chunk_size = chunk_size.unwrap_or(100);
@@ -140,7 +179,9 @@ impl<'a, I: Bits, R: Reference> MinHashSearcher<'a, I, R> {
 					heap.clear();
 					self.hashers.iter().enumerate().map(|(i_hash, hasher)| {
 						let hash: usize = hasher.hash(&q);
-						self.inverted_index[i_hash][hash].iter()
+						(0..self.hash_collision_table.len_of(Axis(1))).map(move |col| {
+							self.inverted_index[i_hash][self.hash_collision_table[[hash, col]]].iter()
+						}).flatten()
 					}).flatten()
 					.for_each(|i_row| {
 						let i_row: usize = i_row.as_usize();
@@ -636,31 +677,36 @@ fn test_min_hash_search() {
 	let chunk_size = (queries.len_of(Axis(0))+num_threads()*2-1)/(num_threads()*2);
 	println!("Num bits: {}, Num data: {}, Num queries: {}", n_bits, data.len_of(Axis(0)), queries.len_of(Axis(0)));
 	let brute_force_timer = Timer::new();
-	let (true_nn_dists, true_nn_idxs) = BinarizationEvaluator::new().brute_force_k_smallest_hamming(&data, &queries, k_neighbors, Some(chunk_size));
+	let (_true_nn_dists, true_nn_idxs) = BinarizationEvaluator::new().brute_force_k_smallest_hamming(&data, &queries, k_neighbors, Some(chunk_size));
 	println!("Brute force time: {}", brute_force_timer.elapsed_str());
-	let searcher_build_timer = Timer::new();
-	let searcher: MinHashSearcher<u64,u32> = MinHashSearcher::new(
-		&data,
-		12,
-		5,
-	);
-	println!("Searcher build time: {}", searcher_build_timer.elapsed_str());
-	println!("Memory footprint: {}", searcher.memory_footprint());
-	let search_timer = Timer::new();
-	let (_, nn_idxs) = searcher.query(&queries, k_neighbors, Some(chunk_size));
-	println!("Search time: {}", search_timer.elapsed_str());
-	let recall = true_nn_idxs.axis_iter(Axis(0))
-	.zip(nn_idxs.axis_iter(Axis(0)))
-	.map(|(true_nn, est_nn)| {
-		let true_hashset = true_nn.iter().collect::<std::collections::HashSet<_>>();
-		let est_hashset = est_nn.iter().collect::<std::collections::HashSet<_>>();
-		let n_correct = true_hashset.intersection(&est_hashset).count();
-		n_correct as f64 / true_nn.len() as f64
-	}).sum::<f64>() / queries.len_of(Axis(0)) as f64;
-	println!("Recall: {}", recall);
-	let mut dist_counts = vec![0; n_bits+1];
-	true_nn_dists.iter().for_each(|dist| dist_counts[*dist as usize] += 1);
-	println!("True dist counts: {:?}", dist_counts);
+	vec![
+		(12usize,5usize,0usize),
+		(13usize,9usize,1usize),
+		(14usize,9usize,1usize),
+	].into_iter().for_each(|(num_hashes, num_positions, max_hash_dist)| {
+		let searcher_build_timer = Timer::new();
+		let searcher: MinHashSearcher<u64,u32> = MinHashSearcher::new_with_dist(
+			&data, num_hashes, num_positions, max_hash_dist,
+		);
+		println!("Searcher parameters: {:?}", (num_hashes, num_positions, max_hash_dist));
+		println!("Searcher build time: {}", searcher_build_timer.elapsed_str());
+		println!("Memory footprint: {}", searcher.memory_footprint());
+		let search_timer = Timer::new();
+		let (_, nn_idxs) = searcher.query(&queries, k_neighbors, Some(chunk_size));
+		println!("Search time: {}", search_timer.elapsed_str());
+		let recall = true_nn_idxs.axis_iter(Axis(0))
+		.zip(nn_idxs.axis_iter(Axis(0)))
+		.map(|(true_nn, est_nn)| {
+			let true_hashset = true_nn.iter().collect::<std::collections::HashSet<_>>();
+			let est_hashset = est_nn.iter().collect::<std::collections::HashSet<_>>();
+			let n_correct = true_hashset.intersection(&est_hashset).count();
+			n_correct as f64 / true_nn.len() as f64
+		}).sum::<f64>() / queries.len_of(Axis(0)) as f64;
+		println!("Recall: {}", recall);
+	});
+	// let mut dist_counts = vec![0; n_bits+1];
+	// _true_nn_dists.iter().for_each(|dist| dist_counts[*dist as usize] += 1);
+	// println!("True dist counts: {:?}", dist_counts);
 }
 
 #[test]
