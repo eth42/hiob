@@ -484,19 +484,23 @@ impl<F: HIOBFloat, B: HIOBBits> HIOB<F, B> where Array1<B>: BitVectorMut {
 		let mut next_data = cached_source.get_rows_slice(lo, hi);
 		let mut cached = hi;
 		while cached < n_total {
-			let next_lo = cached;
-			let next_hi = (cached+batch_size).min(n_total);
+			let (next_lo, next_hi) = (cached, (cached+batch_size).min(n_total));
 			assert!(cached_source.prepare_rows_slice(next_lo, next_hi).is_ok());
 			cached += next_hi-next_lo;
 			let next_bins = self.binarize(&next_data);
-			ret.slice_axis_mut(Axis(0), Slice::from(lo..hi)).axis_iter_mut(Axis(0)).zip(next_bins.axis_iter(Axis(0)))
+			// println!("{:?} {:?}", next_data.shape(), next_bins.shape());
+			ret.slice_axis_mut(Axis(0), Slice::from(lo..hi))
+			.axis_iter_mut(Axis(0))
+			.zip(next_bins.axis_iter(Axis(0)))
 			.for_each(|(mut row_to, row_from)| row_to.assign(&row_from));
 			next_data = cached_source.get_cached().unwrap();
-			lo = next_lo;
-			hi = next_hi;
+			(lo,hi) = (next_lo,next_hi);
 		}
 		let next_bins = self.binarize(&next_data);
-		ret.slice_axis_mut(Axis(0), Slice::from(lo..hi)).axis_iter_mut(Axis(0)).zip(next_bins.axis_iter(Axis(0)))
+		// println!("{:?} {:?}", next_data.shape(), next_bins.shape());
+		ret.slice_axis_mut(Axis(0), Slice::from(lo..hi))
+		.axis_iter_mut(Axis(0))
+		.zip(next_bins.axis_iter(Axis(0)))
 		.for_each(|(mut row_to, row_from)| row_to.assign(&row_from));
 		Ok(ret)
 	}
@@ -1017,9 +1021,9 @@ impl ITQInitializer {
 		let mut rng = thread_rng();
 		let normal: Normal<f64> = Normal::new(0., 1.).unwrap();
 		/* Sample normally distributed matrix */
-		let rand = Array2::from_shape_fn([n_dims, n_dims], |(_,_)| F::from(normal.sample(&mut rng)).unwrap());
+		let rand = Array2::from_shape_fn([n_dims, n_dims], |(_,_)| normal.sample(&mut rng));
 		/* Compute covariance */
-		let cov = rand.cov(F::zero()).unwrap();
+		let cov = rand.cov(0f64).unwrap();
 		/* Compute eigenvectors */
 		let (_, eigvecs) = cov.eigh(UPLO::Upper).unwrap();
 		/* Return eigenvectors */
@@ -1037,9 +1041,10 @@ impl HyperplaneInitializer for ITQInitializer {
 		} else {
 			data.t().cov(F::zero()).unwrap()
 		};
-		let (_, eigvecs) = data_cov.eigh(UPLO::Upper).unwrap();
+		let (_, eigvecs) = data_cov.mapv(|v| v.to_f64().unwrap()).eigh(UPLO::Upper).unwrap();
 		/* Only keep n_bits largest eigenvectors */
 		let eigvecs = eigvecs.slice(s![.., n_dims-n_bits..]);
+		let eigvecs = eigvecs.mapv(|v| F::from(v).unwrap());
 		assert_eq!(eigvecs.shape(), [n_dims, n_bits]);
 		let pca_embedded = data.dot(&eigvecs);
 		/* Initialize with random rotation */
@@ -1052,9 +1057,9 @@ impl HyperplaneInitializer for ITQInitializer {
 			/* Correlation with PCA */
 			let c = ux.t().dot(&pca_embedded);
 			/* Compute SVD of correlation */
-			let (ub, _, ua) = c.svd(true, true).unwrap();
+			let (ub, _, ua) = c.mapv(|v| v.to_f64().unwrap()).svd(true, true).unwrap();
 			/* Update random rotation */
-			rot = ua.unwrap().dot(&ub.unwrap()).t().to_owned();
+			rot = ua.unwrap().dot(&ub.unwrap()).t().mapv(|v| F::from(v).unwrap());
 			assert_eq!(rot.shape(), [n_bits, n_bits]);
 		}
 		let centers = eigvecs.dot(&rot).t().to_owned();

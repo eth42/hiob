@@ -175,7 +175,7 @@ class StochasticHIOB:
 			update_parallel=update_parallel,
 			displace_parallel=displace_parallel,
 		)
-		self._post_constructor_init(specific_type, update_parallel, displace_parallel)
+		self._post_constructor_init(specific_type)
 		return self
 	def from_ndarray(
 		X: np.ndarray,

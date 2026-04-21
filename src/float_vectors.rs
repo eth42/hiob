@@ -21,26 +21,33 @@ pub struct DotProduct {}
 impl InnerProduct for DotProduct {
 	#[inline(always)]
 	fn prod<F: HIOBFloat>(a: &[F], b: &[F], d: usize) -> F {
-		const LANES: usize = 8;
-		if LANES > 1 {
-			assert!(LANES != 0 && (LANES & (LANES-1)) == 0); // must be power of two
-			let sd = d & !(LANES-1);
-			let mut vsum = [F::zero(); LANES];
-			for i in (0..sd).step_by(LANES) {
-				let (vv, cc) = (&a[i..(i+LANES)], &b[i..(i+LANES)]);
-				for j in 0..LANES { unsafe {
-					let (a, b) = (*vv.get_unchecked(j), *cc.get_unchecked(j));
-					*vsum.get_unchecked_mut(j) = a.mul_add(b, *vsum.get_unchecked(j)); // FMA
-				}};
+		#[cfg(target_arch = "x86_64")]
+		return {
+			use crate::types::VFMADotProd;
+			<F as VFMADotProd<8>>::dot_prod(a, b, d)
+		};
+		#[cfg(not(target_arch = "x86_64"))]
+		return { const LANES: usize = 8;
+			if LANES > 1 {
+				assert!(LANES != 0 && (LANES & (LANES-1)) == 0); // must be power of two
+				let sd = d & !(LANES-1);
+				let mut vsum = [F::zero(); LANES];
+				for i in (0..sd).step_by(LANES) {
+					let (vv, cc) = (&a[i..(i+LANES)], &b[i..(i+LANES)]);
+					for j in 0..LANES { unsafe {
+						let (a, b) = (*vv.get_unchecked(j), *cc.get_unchecked(j));
+						*vsum.get_unchecked_mut(j) = a.mul_add(b, *vsum.get_unchecked(j)); // FMA
+					}};
+				}
+				let mut sum = vsum.iter().copied().sum::<F>();
+				if d > sd {
+					sum += (sd..d).map(|i| unsafe { *a.get_unchecked(i) * *b.get_unchecked(i) }).sum()
+				}
+				sum
+			} else {
+				(0..d).map(|i| unsafe { *a.get_unchecked(i) * *b.get_unchecked(i) }).sum()
 			}
-			let mut sum = vsum.iter().copied().sum::<F>();
-			if d > sd {
-				sum += (sd..d).map(|i| unsafe { *a.get_unchecked(i) * *b.get_unchecked(i) }).sum()
-			}
-			sum
-		} else {
-			(0..d).map(|i| unsafe { *a.get_unchecked(i) * *b.get_unchecked(i) }).sum()
-		}
+		};
 	}
 }
 

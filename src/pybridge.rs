@@ -3,7 +3,7 @@ use pyo3::prelude::*;
 use numpy::{PyArray1,PyArray2,PyReadonlyArray1,PyReadonlyArray2,ToPyArray};
 use num::NumCast;
 use paste::paste;
-use ndarray::{Array2,OwnedRepr};
+use ndarray::{ArrayView1,ArrayView2,Array1,Array2,OwnedRepr};
 use pyo3::exceptions::PyValueError;
 #[cfg(feature="half")]
 use half::f16;
@@ -14,6 +14,22 @@ use crate::eval::BinarizationEvaluator;
 use crate::bit_vectors::BitVector;
 use crate::index::THX;
 
+/* Conversion code to handle different ndarray versions in this crate and numpy dependencies */
+fn arr1_rust_to_py<T>(arr: Array1<T>) -> numpy::ndarray::Array1<T> {
+	numpy::ndarray::Array1::from_vec(arr.into_raw_vec())
+}
+fn arr2_rust_to_py<T>(arr: Array2<T>) -> numpy::ndarray::Array2<T> {
+	let shape = arr.shape();
+	unsafe{numpy::ndarray::Array2::from_shape_vec_unchecked((shape[0],shape[1]), arr.into_raw_vec())}
+}
+fn arrview1_py_to_rust<T>(arr: numpy::ndarray::ArrayView1<T>) -> ArrayView1<'static, T> {
+	let shape = arr.shape();
+	unsafe{ArrayView1::from_shape_ptr((shape[0],), arr.as_ptr() as *const T)}
+}
+fn arrview2_py_to_rust<T>(arr: numpy::ndarray::ArrayView2<T>) -> ArrayView2<'static, T> {
+	let shape = arr.shape();
+	unsafe{ArrayView2::from_shape_ptr((shape[0],shape[1]), arr.as_ptr() as *const T)}
+}
 
 macro_rules! get_gen {
 	($($obj: ident).+, $field: ident) => { paste! {
@@ -329,7 +345,7 @@ macro_rules! stochastic_hiob_struct_gen {
 			#[allow(non_camel_case_types)]
 			#[pyclass]
 			pub struct [<StochasticHIOB_ND_ $prec_type _ $bin_type>] {
-				shiob: StochasticHIOB<$prec_type,$bin_type,Array2<$prec_type>>
+				shiob: StochasticHIOB<$prec_type,$bin_type,ArrayView2<'static, $prec_type>>
 			}
 			#[pymethods]
 			impl [<StochasticHIOB_ND_ $prec_type _ $bin_type>] {
@@ -363,7 +379,8 @@ macro_rules! stochastic_hiob_struct_gen {
 					displace_parallel: Option<bool>,
 				) -> PyResult<Self> {
 					Ok(Self{shiob: StochasticHIOB::new(
-						data.as_array().into_owned(),
+						arrview2_py_to_rust(data.as_array()),
+						// data.as_array().into_owned(),
 						n_bits,
 						StochasticHIOBParams::new()
 						.maybe_with_sample_size(sample_size)
@@ -408,7 +425,9 @@ macro_rules! stochastic_hiob_struct_gen {
 					self.shiob.get_inversive_balls().map(|(a,b)| (a.to_pyarray(py), b.to_pyarray(py)))
 				}
 				pub fn binarize<'py>(&self, py: Python<'py>, queries: PyReadonlyArray2<$prec_type>) -> &'py PyArray2<$bin_type> {
-					self.shiob.binarize(&queries.as_array()).to_pyarray(py)
+					// let queries = queries.as_array();
+					let queries = arrview2_py_to_rust(queries.as_array());
+					self.shiob.binarize(&queries).to_pyarray(py)
 				}
 				pub fn binarize_h5<'py>(&self, py: Python<'py>, file: String, dataset: String, batch_size: Option<usize>) -> PyResult<&'py PyArray2<$bin_type>> {
 					let result = self.shiob.binarize_h5(file.as_str(), dataset.as_str(), batch_size.unwrap_or(1000));
@@ -491,8 +510,8 @@ macro_rules! stochastic_hiob_struct_gen {
 					get_gen!(self.shiob, kernel_reshape)
 				}
 				#[getter]
-				pub fn get_inverter_scale(&self) -> PyResult<Option<$prec_type>> {
-					get_gen!(self.shiob, inverter_scale)
+				pub fn get_inverter_scale(&self) -> PyResult<Option<f64>> {
+					get_gen!(self.shiob, inverter_scale).map(|o| o.map(|v| <f64 as NumCast>::from(v).unwrap()))
 				}
 				#[getter]
 				pub fn get_inverter_shift<'py>(&self, py: Python<'py>) -> PyResult<Option<&'py PyArray1<$prec_type>>> {
