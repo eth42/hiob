@@ -16,6 +16,7 @@ num = "0.4.0"
 ndarray = "0.15.6"
 ndarray-rand = "0.14.0"
 ndarray-linalg = {version="0.16.0", features = ["openblas-system"]}
+openblas-src = { version = "0.10", features = ["rustls"] } # Feature override necessary for ndarray-linalg to work
 ndarray-stats = "0.5.1"
 rand = "0.8.5"
 futures = "0.3.28"
